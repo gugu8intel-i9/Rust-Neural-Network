@@ -1,0 +1,41 @@
+[package]
+name = "rust-nn"
+version = "0.1.0"
+edition = "2021"
+description = "A high-performance, ergonomic neural network library in Rust"
+license = "MIT"
+keywords = ["neural-network", "deep-learning", "machine-learning", "tensor"]
+categories = ["science"]
+readme = "README.md"
+repository = "https://github.com/yourusername/rust-nn"
+documentation = "https://docs.rs/rust-nn"
+
+[lib]
+name = "rust_nn"
+path = "src/lib.rs"
+
+[dependencies]
+# Random number generation
+rand = "0.8"
+rand_distr = "0.4"
+
+# High-performance N-dimensional arrays
+ndarray = { version = "0.15", features = ["rayon", "serde"] }
+ndarray-rand = "0.14"
+rayon = "1.7"
+num-traits = "0.2"
+
+# Optional serialization
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[dev-dependencies]
+# For testing
+approx = "0.5"
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[profile.release]
+opt-level = 3
+lto = true
