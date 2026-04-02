@@ -202,7 +202,7 @@ cargo run --example classification
 
 ## License
 
-MIT License
+AGPL-3.0 license
 
 ## Contributing
 
