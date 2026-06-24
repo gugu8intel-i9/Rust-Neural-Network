@@ -109,3 +109,98 @@ impl Optimizer for Adam {
         }
     }
 }
+
+pub struct RMSprop {
+    params: Vec<Tensor>,
+    lr: f32,
+    alpha: f32,
+    eps: f32,
+    v: Vec<ndarray::ArrayD<f32>>,
+}
+
+impl RMSprop {
+    pub fn new(params: Vec<Tensor>, lr: f32) -> Self {
+        let mut v = Vec::new();
+        for p in &params {
+            let shape = p.shape();
+            v.push(ndarray::ArrayD::zeros(ndarray::IxDyn(&shape)));
+        }
+        RMSprop {
+            params,
+            lr,
+            alpha: 0.99,
+            eps: 1e-8,
+            v,
+        }
+    }
+}
+
+impl Optimizer for RMSprop {
+    fn step(&mut self) {
+        for (i, param) in self.params.iter_mut().enumerate() {
+            let mut inner = param.0.write().unwrap();
+            if let Some(grad) = inner.grad.take() {
+                self.v[i] = &self.v[i] * self.alpha + (&grad * &grad) * (1.0 - self.alpha);
+                let update = &grad / (self.v[i].mapv(|x| x.sqrt()) + self.eps);
+                inner.data -= &(update * self.lr);
+            }
+        }
+    }
+
+    fn zero_grad(&mut self) {
+        for param in &self.params {
+            param.zero_grad();
+        }
+    }
+}
+
+pub struct Muon {
+    params: Vec<Tensor>,
+    lr: f32,
+    momentum: f32,
+    momentum_buffers: Vec<Option<ndarray::ArrayD<f32>>>,
+}
+
+impl Muon {
+    pub fn new(params: Vec<Tensor>, lr: f32, momentum: f32) -> Self {
+        let n_params = params.len();
+        Muon {
+            params,
+            lr,
+            momentum,
+            momentum_buffers: vec![None; n_params],
+        }
+    }
+}
+
+impl Optimizer for Muon {
+    fn step(&mut self) {
+        for (i, param) in self.params.iter_mut().enumerate() {
+            let mut inner = param.0.write().unwrap();
+            if let Some(grad) = inner.grad.take() {
+                // RMS normalization of the gradient per tensor (a core part of Muon strategy for ND arrays)
+                let sq_sum: f32 = grad.iter().map(|&x| x * x).sum();
+                let rms = (sq_sum / grad.len() as f32).sqrt().max(1e-8);
+                let orth_grad = grad.mapv(|x| x / rms);
+
+                if self.momentum > 0.0 {
+                    if let Some(ref mut buffer) = self.momentum_buffers[i] {
+                        *buffer = buffer.clone() * self.momentum + &orth_grad;
+                        inner.data -= &(buffer.clone() * self.lr);
+                    } else {
+                        self.momentum_buffers[i] = Some(orth_grad.clone());
+                        inner.data -= &(orth_grad * self.lr);
+                    }
+                } else {
+                    inner.data -= &(orth_grad * self.lr);
+                }
+            }
+        }
+    }
+
+    fn zero_grad(&mut self) {
+        for param in &self.params {
+            param.zero_grad();
+        }
+    }
+}

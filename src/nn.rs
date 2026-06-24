@@ -101,6 +101,106 @@ impl Module for ReLU {
 }
 
 #[derive(Debug, Clone)]
+pub struct NormalMoE {
+    pub gate: Linear,
+    pub experts: Vec<Sequential>,
+}
+
+impl NormalMoE {
+    pub fn new(in_features: usize, hidden_features: usize, num_experts: usize) -> Self {
+        let gate = Linear::new(in_features, num_experts, true);
+        let mut experts = Vec::new();
+        for _ in 0..num_experts {
+            let expert = Sequential::new()
+                .add(Linear::new(in_features, hidden_features, true))
+                .add(ReLU)
+                .add(Linear::new(hidden_features, in_features, true));
+            experts.push(expert);
+        }
+        NormalMoE { gate, experts }
+    }
+}
+
+impl Module for NormalMoE {
+    fn forward(&self, input: &Tensor) -> Tensor {
+        // Compute routing logits
+        let _routing_logits = self.gate.forward(input);
+        
+        // As a dense approximation without tensor slicing/top-k ops in the autograd engine,
+        // we pass the input through all experts and sum their outputs.
+        // In a full implementation, this would use sparse routing and gating weights.
+        let mut combined_output = self.experts[0].forward(input);
+        for i in 1..self.experts.len() {
+            let expert_out = self.experts[i].forward(input);
+            combined_output = combined_output.add(&expert_out);
+        }
+        
+        combined_output
+    }
+
+    fn parameters(&self) -> Vec<Tensor> {
+        let mut params = self.gate.parameters();
+        for expert in &self.experts {
+            params.extend(expert.parameters());
+        }
+        params
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FineGrainedMoE {
+    pub gate: Linear,
+    pub shared_expert: Sequential,
+    pub experts: Vec<Sequential>,
+}
+
+impl FineGrainedMoE {
+    pub fn new(in_features: usize, shared_hidden: usize, expert_hidden: usize, num_experts: usize) -> Self {
+        let gate = Linear::new(in_features, num_experts, true);
+        let shared_expert = Sequential::new()
+            .add(Linear::new(in_features, shared_hidden, true))
+            .add(ReLU)
+            .add(Linear::new(shared_hidden, in_features, true));
+            
+        let mut experts = Vec::new();
+        for _ in 0..num_experts {
+            let expert = Sequential::new()
+                .add(Linear::new(in_features, expert_hidden, true))
+                .add(ReLU)
+                .add(Linear::new(expert_hidden, in_features, true));
+            experts.push(expert);
+        }
+        FineGrainedMoE { gate, shared_expert, experts }
+    }
+}
+
+impl Module for FineGrainedMoE {
+    fn forward(&self, input: &Tensor) -> Tensor {
+        let _routing_logits = self.gate.forward(input);
+        
+        // Pass through shared expert
+        let mut combined_output = self.shared_expert.forward(input);
+        
+        // Dense approximation for fine-grained experts
+        for expert in &self.experts {
+            let expert_out = expert.forward(input);
+            combined_output = combined_output.add(&expert_out);
+        }
+        
+        combined_output
+    }
+
+    fn parameters(&self) -> Vec<Tensor> {
+        let mut params = self.gate.parameters();
+        params.extend(self.shared_expert.parameters());
+        for expert in &self.experts {
+            params.extend(expert.parameters());
+        }
+        params
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Flatten;
 
 impl Module for Flatten {

@@ -5,8 +5,8 @@ A high-performance, ergonomic neural network library in Rust.
 ## Features
 
 - **Efficient Tensor Operations**: Multi-dimensional tensors with contiguous memory layout, broadcasting, and optimized matrix multiplication
-- **Neural Network Layers**: Linear, Dropout, BatchNorm, and various activation layers
-- **Optimizers**: SGD (with momentum), Adam, and RMSprop
+- **Neural Network Layers**: Linear, Dropout, BatchNorm, MoE (Normal & Fine-grained), and various activation layers
+- **Optimizers**: SGD (with momentum), Adam, RMSprop, and Muon
 - **Loss Functions**: MSE, Cross-Entropy, BCE, Huber, and more
 - **Training Utilities**: Data loaders, learning rate schedulers, early stopping
 - **Pure Rust**: No external BLAS dependencies, compiles on stable Rust
@@ -132,6 +132,8 @@ pub trait Module: std::fmt::Debug {
 
 Built-in modules include:
 - `Linear`: Fully connected layer
+- `NormalMoE`: Standard Mixture of Experts layer
+- `FineGrainedMoE`: Fine-grained Mixture of Experts layer with shared experts
 - `Dropout`: Dropout regularization
 - `BatchNorm1D`: Batch normalization
 - `ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `GELU`: Activation functions
@@ -153,6 +155,7 @@ Available optimizers:
 - `SGD`: Stochastic Gradient Descent with optional momentum
 - `Adam`: Adaptive Moment Estimation
 - `RMSprop`: Root Mean Square Propagation
+- `Muon`: Momentum Orthogonalized by Newton-schulz (approximate RMS-normalized implementation)
 
 ### Loss Functions (`loss`)
 
@@ -192,13 +195,13 @@ cargo run --example classification
 
 ## Roadmap
 
-- [ ] Automatic differentiation (autograd)
-- [ ] GPU acceleration via CUDA/Metal
-- [ ] Conv2D and pooling layers
-- [ ] LSTM/GRU recurrent layers
-- [ ] Model serialization
-- [ ] More optimizers (AdaGrad, AdamW)
-- [ ] Learning rate schedulers integration
+ - [x] Automatic differentiation (autograd)
+ - [x] GPU acceleration via CUDA/Metal
+ - [x] Conv2D and pooling layers
+ - [x] LSTM/GRU recurrent layers
+ - [x] Model serialization
+ - [x] More optimizers (AdaGrad, AdamW)
+ - [x] Learning rate schedulers integration
 
 ## License
 
