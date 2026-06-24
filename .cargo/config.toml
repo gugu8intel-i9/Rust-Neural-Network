@@ -1,0 +1,3 @@
+[build]
+# Auto-vectorize for the native architecture (Apple Silicon NEON, or x86_64 AVX2/AVX512)
+rustflags = ["-C", "target-cpu=native"]

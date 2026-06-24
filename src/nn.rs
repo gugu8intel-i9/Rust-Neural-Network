@@ -201,6 +201,77 @@ impl Module for FineGrainedMoE {
 }
 
 #[derive(Debug, Clone)]
+pub struct Recursive {
+    pub module: Arc<dyn Module>,
+    pub depth: usize,
+}
+
+impl Recursive {
+    pub fn new<M: Module + 'static>(module: M, depth: usize) -> Self {
+        Recursive {
+            module: Arc::new(module),
+            depth,
+        }
+    }
+}
+
+impl Module for Recursive {
+    fn forward(&self, input: &Tensor) -> Tensor {
+        let mut out = input.clone();
+        for _ in 0..self.depth {
+            out = self.module.forward(&out);
+        }
+        out
+    }
+
+    fn parameters(&self) -> Vec<Tensor> {
+        self.module.parameters()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RNNCell {
+    pub weight_ih: Linear,
+    pub weight_hh: Linear,
+}
+
+impl RNNCell {
+    pub fn new(input_size: usize, hidden_size: usize) -> Self {
+        RNNCell {
+            weight_ih: Linear::new(input_size, hidden_size, true),
+            weight_hh: Linear::new(hidden_size, hidden_size, true),
+        }
+    }
+    
+    pub fn forward(&self, input: &Tensor, hidden: &Tensor) -> Tensor {
+        use crate::activations::tanh;
+        let ih = self.weight_ih.forward(input);
+        let hh = self.weight_hh.forward(hidden);
+        tanh(&ih.add(&hh))
+    }
+    
+    fn parameters(&self) -> Vec<Tensor> {
+        let mut p = self.weight_ih.parameters();
+        p.extend(self.weight_hh.parameters());
+        p
+    }
+}
+
+impl Module for RNNCell {
+    fn forward(&self, input: &Tensor) -> Tensor {
+        // Just for module compatibility, assuming hidden state zero
+        let batch_size = input.shape()[0];
+        let hidden_size = self.weight_hh.weight.shape()[0];
+        let hidden = Tensor::zeros(&[batch_size, hidden_size]);
+        self.forward(input, &hidden)
+    }
+
+    fn parameters(&self) -> Vec<Tensor> {
+        self.parameters()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Flatten;
 
 impl Module for Flatten {

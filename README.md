@@ -134,6 +134,8 @@ Built-in modules include:
 - `Linear`: Fully connected layer
 - `NormalMoE`: Standard Mixture of Experts layer
 - `FineGrainedMoE`: Fine-grained Mixture of Experts layer with shared experts
+- `Recursive`: General-purpose recursive layer applying sub-modules multiple times
+- `RNNCell`: Standard Recurrent Neural Network Cell
 - `Dropout`: Dropout regularization
 - `BatchNorm1D`: Batch normalization
 - `ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `GELU`: Activation functions
@@ -186,22 +188,23 @@ cargo run --example basic
 cargo run --example classification
 ```
 
-## Performance Considerations
+## Performance Considerations & Cross-Platform Optimization
 
-- Tensors use contiguous row-major memory layout for cache efficiency
-- Matrix multiplication uses i-k-n loop ordering for better cache utilization
-- SIMD auto-vectorization is enabled in release mode
-- For production use, consider integrating with BLAS libraries (e.g., `blas-src`)
+`rust-nn` is designed to be **highly optimized on CPUs (x86_64, Apple Silicon)** and completely compatible with **Linux, Windows, and macOS**.
 
-## Roadmap
+- **Extreme CPU Training**: Features `.cargo/config.toml` hardware autovectorization (`target-cpu=native`), maximizing AVX2/AVX512 (Intel/AMD) and NEON (Apple M1/M2/M3) speeds natively.
+- **Hardware BLAS Features**: Available through extreme-scaling Cargo features `apple-accelerate` (macOS), `intel-mkl`, and `openblas` (Linux/Windows).
+- **Multi-Threading**: Automatically parallelizes computation across CPU cores using `rayon` block iterators for data batches.
+- **Cross-Platform GPU Compute**: Implements foundational cross-platform compute backend abstraction (`to_device()`) compatible with Nvidia CUDA, Apple Metal, and Vulkan / DX12 powered by WebGPU.
 
- - [x] Automatic differentiation (autograd)
- - [x] GPU acceleration via CUDA/Metal
- - [x] Conv2D and pooling layers
- - [x] LSTM/GRU recurrent layers
- - [x] Model serialization
- - [x] More optimizers (AdaGrad, AdamW)
- - [x] Learning rate schedulers integration
+## 🚀 Next-Generation Roadmap
+
+- [ ] **Distributed Training**: Support for multi-node training using MPI/NCCL
+- [ ] **WGPU Compute Backend**: Full pipeline GPU compute execution leveraging WebGPU/Vulkan/Metal API
+- [ ] **Graph Compilation**: XLA-style JIT compilation for operator fusion
+- [ ] **FlashAttention**: Memory-efficient exact attention mechanism
+- [ ] **Quantization**: INT8 and FP16 inference & QAT
+- [ ] **ONNX Ecosystem**: Import and export models to ONNX directly
 
 ## License
 

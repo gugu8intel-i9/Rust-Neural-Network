@@ -25,6 +25,10 @@ ndarray-rand = "0.14"
 rayon = "1.7"
 num-traits = "0.2"
 
+# Cross-Platform GPU Support (Linux/Vulkan, macOS/Metal, Windows/DX12)
+wgpu = "0.19"
+pollster = "0.3"
+
 # Optional serialization
 serde = { version = "1.0", features = ["derive"], optional = true }
 
@@ -35,7 +39,13 @@ approx = "0.5"
 [features]
 default = []
 serde = ["dep:serde"]
+# Hardware specific BLAS optimizations for ultimate performance scaling
+apple-accelerate = ["ndarray/blas"]
+openblas = ["ndarray/blas"]
+intel-mkl = ["ndarray/blas"]
 
 [profile.release]
 opt-level = 3
-lto = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"

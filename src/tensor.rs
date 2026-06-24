@@ -11,11 +11,26 @@ use std::ops::{Add, Mul, Sub};
 
 /// Internal data for a Tensor, including data, gradients, and graph info.
 #[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Device {
+    Cpu,
+    Gpu,   // Vulkan/DX12 (Windows/Linux)
+    Metal, // Apple Silicon GPU
+    Cuda,  // Nvidia GPUs
+}
+
+impl Default for Device {
+    fn default() -> Self {
+        Device::Cpu
+    }
+}
+
 pub struct TensorData {
     pub data: ArrayD<f32>,
     pub grad: Option<ArrayD<f32>>,
     pub requires_grad: bool,
     pub creator: Option<Arc<Op>>,
+    pub device: Device,
 }
 
 /// Operations for the computational graph.
@@ -45,6 +60,7 @@ impl Tensor {
             grad: None,
             requires_grad,
             creator: None,
+            device: Device::Cpu,
         })))
     }
 
@@ -118,6 +134,19 @@ impl Tensor {
         if let Some(ref mut grad) = inner.grad {
             grad.fill(0.0);
         }
+    }
+
+    /// Explicitly move the tensor to the specified compute device (CPU, Gpu, Metal, Cuda)
+    pub fn to_device(&self, device: Device) -> Tensor {
+        let mut inner = self.0.write().unwrap();
+        inner.device = device;
+        // Logic for transferring actual memory buffers via wgpu goes here in the future
+        self.clone()
+    }
+
+    /// Retrieve the current compute device the tensor lives on
+    pub fn device(&self) -> Device {
+        self.0.read().unwrap().device
     }
 
     // ==================== Operations ====================
