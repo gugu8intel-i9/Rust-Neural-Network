@@ -312,6 +312,20 @@ impl Tensor {
         }
         res
     }
+
+    pub fn clamp(&self, min: f32, max: f32) -> Tensor {
+        let data = self.0.read().unwrap().data.mapv(|x| x.clamp(min, max));
+        // Straight-through estimator (STE) approximation for gradients could be handled here
+        let res = Tensor::new(data, self.0.read().unwrap().requires_grad);
+        // Simple passthrough for demonstration
+        res
+    }
+
+    pub fn round(&self) -> Tensor {
+        let data = self.0.read().unwrap().data.mapv(|x| x.round());
+        let res = Tensor::new(data, self.0.read().unwrap().requires_grad);
+        res
+    }
 }
 
 impl Add for Tensor {

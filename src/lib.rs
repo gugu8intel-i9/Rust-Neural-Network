@@ -41,12 +41,14 @@ pub mod nn;
 pub mod optim;
 pub mod loss;
 pub mod train;
+pub mod reasoning;
 
 // Re-export main types for convenient access
 pub use tensor::Tensor;
 pub use activations::{relu, sigmoid, tanh};
-pub use nn::{Module, Sequential, Linear, ReLU, Flatten};
-pub use optim::{Optimizer, SGD, Adam};
+pub use nn::{Module, Sequential, Linear, ReLU, Flatten, FakeQuantize, CSA, HCA};
+pub use reasoning::{SwiReasoning, MarkovianRSA};
+pub use optim::{Optimizer, SGD, Adam, RMSprop, Muon};
 pub use loss::{Loss, MSELoss, CrossEntropyLoss};
 pub use train::{SimpleDataLoader, Trainer};
 

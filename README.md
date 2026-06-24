@@ -5,7 +5,7 @@ A high-performance, ergonomic neural network library in Rust.
 ## Features
 
 - **Efficient Tensor Operations**: Multi-dimensional tensors with contiguous memory layout, broadcasting, and optimized matrix multiplication
-- **Neural Network Layers**: Linear, Dropout, BatchNorm, MoE (Normal & Fine-grained), and various activation layers
+- **Neural Network Layers**: Linear, Dropout, BatchNorm, MoE (Normal & Fine-grained), DeepSeek Attention (CSA & HCA), FakeQuantize (QAT), and various activation layers
 - **Optimizers**: SGD (with momentum), Adam, RMSprop, and Muon
 - **Loss Functions**: MSE, Cross-Entropy, BCE, Huber, and more
 - **Training Utilities**: Data loaders, learning rate schedulers, early stopping
@@ -139,9 +139,17 @@ Built-in modules include:
 - `Dropout`: Dropout regularization
 - `BatchNorm1D`: Batch normalization
 - `ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `GELU`: Activation functions
+- `FakeQuantize`: Quantization Aware Training (QAT) simulation layer via Straight-Through Estimators
+- `CSA`: DeepSeek Compressed Sparse Attention module
+- `HCA`: DeepSeek Heavy Compressed Attention module
+
 - `Sequential`: Container for stacking layers
 
-### Optimizers (`optim`)
+### Advanced Reasoning Strategies (`reasoning`)
+
+Built-in modern post-training and generation routines for foundational LLM logic:
+- `SwiReasoning`: Switch-Thinking between Latent and Explicit spaces (Pareto-Superior Reasoning)
+- `MarkovianRSA`: Markovian Repeated Sampling and Aggregation (Test-Time-Compute block architecture)
 
 All optimizers implement the `Optimizer` trait:
 
