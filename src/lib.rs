@@ -42,6 +42,7 @@ pub mod optim;
 pub mod loss;
 pub mod train;
 pub mod reasoning;
+pub mod quant;
 
 // Re-export main types for convenient access
 pub use tensor::Tensor;
@@ -49,11 +50,13 @@ pub use activations::{relu, sigmoid, tanh, softmax, gelu};
 pub use nn::{
     Module, Sequential, Linear, ReLU, Sigmoid, Tanh, Softmax, GELU, Flatten, Dropout,
     BatchNorm1D, NormalMoE, FineGrainedMoE, Recursive, RNNCell, FakeQuantize, CSA, HCA,
+    attention, flash_attention,
 };
 pub use reasoning::{SwiReasoning, MarkovianRSA};
 pub use optim::{Optimizer, SGD, Adam, RMSprop, Muon};
 pub use loss::{Loss, MSELoss, CrossEntropyLoss, BCELoss, BCEWithLogitsLoss, L1Loss, HuberLoss};
 pub use train::{SimpleDataLoader, Trainer};
+pub use quant::{Rotor, RotorQuant};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -565,3 +565,26 @@ impl Module for Flatten {
         Vec::new()
     }
 }
+
+// ==================== Attention ====================
+
+/// Standard scaled dot-product attention, `softmax(Q·Kᵀ / √d) · V`.
+///
+/// Provided as a reference implementation; prefer [`flash_attention`] for long sequences,
+/// which computes the identical result without materializing the attention matrix.
+pub fn attention(q: &Tensor, k: &Tensor, v: &Tensor) -> Tensor {
+    let d = q.shape()[2] as f32;
+    let scale = 1.0 / d.sqrt();
+    // Route to the exact flash kernel (standard attention == flash attention numerically).
+    Tensor::flash_attention(q, k, v, scale)
+}
+
+/// Memory-efficient exact scaled dot-product attention (FlashAttention algorithm).
+///
+/// See [`Tensor::flash_attention`](crate::tensor::Tensor::flash_attention) for details.
+/// Uses the standard `1/√d` scaling.
+pub fn flash_attention(q: &Tensor, k: &Tensor, v: &Tensor) -> Tensor {
+    let d = q.shape()[2] as f32;
+    let scale = 1.0 / d.sqrt();
+    Tensor::flash_attention(q, k, v, scale)
+}

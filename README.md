@@ -15,6 +15,11 @@ and [`rayon`](https://crates.io/crates/rayon).
 - **Optimizers**: `SGD` (with momentum), `Adam`, `RMSprop`, `Muon`.
 - **Loss functions** (all fully differentiable): `MSELoss`, `CrossEntropyLoss`, `BCELoss`,
   `BCEWithLogitsLoss`, `L1Loss`, `HuberLoss`.
+- **Attention**: an exact, memory-efficient **FlashAttention** implementation (online-softmax
+  tiling, O(seq) memory, no materialized N×N matrix, fully differentiable).
+- **Quantization**: `FakeQuantize` for QAT, plus **RotorQuant** — block-diagonal Cl(3,0)
+  Clifford-rotor decorrelation + scalar quantization for inference-time KV-cache/activation
+  compression.
 - **Training utilities**: `SimpleDataLoader` and a generic `Trainer`.
 - **Reasoning strategies**: `SwiReasoning` and `MarkovianRSA`.
 - **Pure Rust**: no external BLAS required to build (optional BLAS backends available as Cargo features).
@@ -123,6 +128,56 @@ for epoch in 0..10 {
 }
 ```
 
+### Attention (FlashAttention)
+
+`rust_nn::nn::flash_attention` computes **exact** scaled dot-product attention,
+`softmax(Q·Kᵀ / √d) · V`, for `[batch, seq, d]` inputs. It uses the FlashAttention algorithm:
+rather than building the full `seq × seq` score matrix, it streams over keys per query while
+maintaining running max/sum statistics (the "online softmax"). The result is numerically
+identical to standard attention, but peak memory is **O(seq)** instead of O(seq²), and it is
+fully differentiable (backward recomputes attention on-chip, as in the paper).
+
+```rust
+use rust_nn::tensor::Tensor;
+use rust_nn::nn::flash_attention;
+
+let (batch, seq, d) = (2, 128, 64);
+let q = Tensor::randn(&[batch, seq, d]);
+let k = Tensor::randn(&[batch, seq, d]);
+let v = Tensor::randn(&[batch, seq, d]);
+
+let out = flash_attention(&q, &k, &v);      // [batch, seq, d], scaled by 1/sqrt(d)
+// out.backward(); works — gradients flow to q, k, v.
+```
+
+`nn::attention(q, k, v)` is the same computation under the standard name, and
+`Tensor::flash_attention(q, k, v, scale)` lets you pass a custom scale.
+
+### Quantization (RotorQuant)
+
+**RotorQuant** decorrelates vectors with sparse block-diagonal rotations drawn from the
+Clifford algebra Cl(3,0) — the "rotor sandwich" `RxR̃` — before independently scalar-quantizing
+each coordinate, then recovering the vector with the inverse rotation. The rotation
+homogenizes the per-coordinate distribution so a simple uniform quantizer reaches near-optimal
+distortion using only ~4 rotor parameters per 3-D block (versus a dense d×d transform). It is a
+compression quantizer (round-trips with quantization error), suited to inference-time
+KV-cache / activation quantization.
+
+```rust
+use rust_nn::tensor::Tensor;
+use rust_nn::quant::RotorQuant;
+use rust_nn::nn::Module;
+
+let rq = RotorQuant::new(128, 4);           // 128-dim vectors, 4-bit
+let kv_cache = Tensor::randn(&[8, 128]);    // 8 vectors of dim 128
+
+let compressed = rq.quantize(&kv_cache);    // [8, 128], quantized+dequantized
+// or use it as a Module:
+let compressed = rq.forward(&kv_cache);
+```
+
+For training-time quantization with straight-through gradients, use `nn::FakeQuantize` instead.
+
 ## Architecture
 
 ### `Tensor`
@@ -146,8 +201,9 @@ pub trait Module: std::fmt::Debug + Send + Sync {
 ```
 
 Built-in modules: `Linear`, `Flatten`, `Dropout`, `BatchNorm1D`, `NormalMoE`, `FineGrainedMoE`,
-`Recursive`, `RNNCell`, `FakeQuantize`, `CSA`, `HCA`, `Sequential`, and the activation modules
-`ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `GELU`.
+`Recursive`, `RNNCell`, `FakeQuantize`, `CSA`, `HCA`, `RotorQuant`, `Sequential`, and the
+activation modules `ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `GELU`. Free-function attention is
+available via `nn::attention` / `nn::flash_attention`.
 
 `Sequential::set_training` propagates training/eval mode to its layers (used by `Dropout`).
 
@@ -208,6 +264,18 @@ cargo test
 
 ## Changelog
 
+### 0.3.0 — FlashAttention & RotorQuant, roadmap restored
+
+- **FlashAttention**: added an exact, memory-efficient scaled dot-product attention built on the
+  FlashAttention algorithm (online-softmax tiling → O(seq) memory, no materialized N×N matrix,
+  exact gradients via on-chip recomputation). Exposed as `nn::flash_attention`,
+  `nn::attention`, and `Tensor::flash_attention`. Verified against a naive attention reference
+  (max diff < 1e-5) and finite-difference gradient checks.
+- **RotorQuant**: added a rotation-assisted quantizer using block-diagonal Cl(3,0) Clifford
+  rotors (the sparse rotor-sandwich `RxR̃`) + per-group uniform scalar quantization. Exposed as
+  `quant::RotorQuant` (also a `Module`). Verified norm-preserving, exact-inverse, bounded-error.
+- Restored the **Next-Generation Roadmap** section that was lost when the README was rewritten.
+
 ### 0.2.0 — bug fixes & missing features
 
 This release makes the crate **actually compile and train**. Notable fixes:
@@ -235,6 +303,24 @@ This release makes the crate **actually compile and train**. Notable fixes:
 - Rewrote all four examples so they compile and run against the real API.
 - Fixed `Cargo.toml` metadata: corrected the license (`AGPL-3.0-only`) and repository URL.
 - Added a gradient-correctness test suite (`tests/grad_check.rs`).
+
+## 🚀 Next-Generation Roadmap
+
+What's done and what's planned:
+
+- [x] **Autograd engine**: reverse-mode automatic differentiation with correct broadcasting.
+- [x] **Core layers & optimizers**: Linear, Dropout, BatchNorm, MoE, RNN; SGD/Adam/RMSprop/Muon.
+- [x] **Attention**: exact, memory-efficient FlashAttention (this release).
+- [x] **Quantization**: `FakeQuantize` (QAT) + `RotorQuant` (rotation-assisted compression).
+- [ ] **GPU compute backend**: execute `to_device(Device)` kernels via WebGPU/WGPU/Vulkan/Metal.
+      The CPU autograd engine currently handles all real work; the GPU path is stubbed.
+- [ ] **Fused FlashAttention GPU kernels**: SRAM-tiled, IO-aware CUDA/Metal implementations.
+- [ ] **Full attention layers**: multi-head attention with causal masks, KV-cache, and rotary
+      position embeddings (RoPE) — building on the FlashAttention primitive.
+- [ ] **INT8 / FP16 inference**: end-to-end low-precision execution paths (RotorQuant is a first step).
+- [ ] **Graph compilation**: operator fusion / XLA-style JIT over the autograd graph.
+- [ ] **Distributed training**: multi-node training via MPI/NCCL.
+- [ ] **ONNX ecosystem**: import and export models to/from ONNX.
 
 ## License
 

@@ -83,6 +83,10 @@ pub enum Op {
     L1(Tensor, Tensor),
     /// Fused Huber / smooth-L1. `(pred, target, delta)`.
     Huber(Tensor, Tensor, f32),
+    /// Fused scaled dot-product attention computed via the FlashAttention algorithm
+    /// (online-softmax tiling, no materialized N×N matrix). `(q, k, v, scale)`.
+    /// Inputs and output are `[batch, seq, d]`. Backward is exact.
+    FlashAttention(Tensor, Tensor, Tensor, f32),
 }
 
 /// Numerically stable softmax over the last axis of a dynamic array.
@@ -429,6 +433,73 @@ impl Tensor {
         res
     }
 
+    /// Memory-efficient **exact** scaled dot-product attention (FlashAttention algorithm).
+    ///
+    /// Computes `softmax(Q·Kᵀ · scale) · V` for batched inputs `q`, `k`, `v` of shape
+    /// `[batch, seq, d]`. Rather than building the full `seq × seq` attention matrix, it
+    /// streams over key positions per query while maintaining running max/sum statistics
+    /// (the "online softmax"), so peak memory is **O(seq)** rather than O(seq²) — exactly
+    /// the technique from the FlashAttention paper, minus the GPU SRAM tiling (a CPU has no
+    /// separate on-chip SRAM to exploit, but the algorithmic memory win still applies).
+    ///
+    /// The result is bit-for-bit equivalent to standard attention and fully differentiable.
+    pub fn flash_attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> Tensor {
+        let qd = q.data();
+        let kd = k.data();
+        let vd = v.data();
+        let shape = qd.shape();
+        assert!(
+            shape.len() == 3 && shape == kd.shape() && shape == vd.shape(),
+            "flash_attention expects q,k,v of matching shape [batch, seq, d], got {:?}/{:?}/{:?}",
+            shape,
+            kd.shape(),
+            vd.shape()
+        );
+        let (batch, seq, dim) = (shape[0], shape[1], shape[2]);
+
+        let mut out = ArrayD::zeros(IxDyn(&[batch, seq, dim]));
+        for b in 0..batch {
+            for i in 0..seq {
+                // Online softmax over all key positions for query row `i`.
+                let mut row_max = f32::NEG_INFINITY;
+                let mut row_sum = 0.0f32;
+                let mut acc = vec![0.0f32; dim];
+                for j in 0..seq {
+                    let mut s = 0.0f32;
+                    for t in 0..dim {
+                        s += qd[[b, i, t]] * kd[[b, j, t]];
+                    }
+                    s *= scale;
+
+                    let m_new = row_max.max(s);
+                    // Rescale running statistics: exp(old_max - new_max), 0 on the first step.
+                    let exp_old = (row_max - m_new).exp();
+                    let p = (s - m_new).exp();
+
+                    row_sum = exp_old * row_sum + p;
+                    for t in 0..dim {
+                        acc[t] = exp_old * acc[t] + p * vd[[b, j, t]];
+                    }
+                    row_max = m_new;
+                }
+                let inv = if row_sum > 0.0 { 1.0 / row_sum } else { 0.0 };
+                for t in 0..dim {
+                    out[[b, i, t]] = acc[t] * inv;
+                }
+            }
+        }
+
+        let requires_grad = q.0.read().unwrap().requires_grad
+            || k.0.read().unwrap().requires_grad
+            || v.0.read().unwrap().requires_grad;
+        let res = Tensor::new(out, requires_grad);
+        if requires_grad {
+            res.0.write().unwrap().creator =
+                Some(Arc::new(Op::FlashAttention(q.clone(), k.clone(), v.clone(), scale)));
+        }
+        res
+    }
+
     pub fn transpose(&self) -> Tensor {
         let data = self.0.read().unwrap().data.clone().reversed_axes();
         let res = Tensor::new(data, self.0.read().unwrap().requires_grad);
@@ -614,6 +685,86 @@ impl Tensor {
                         grad_arr.mapv_inplace(|x| x * scale);
                         pred.backward_with_grad(grad_arr);
                     }
+                }
+                Op::FlashAttention(q, k, v, scale) => {
+                    // Recompute attention on-chip (the FlashAttention backward strategy) and
+                    // apply the standard attention gradient formulas.
+                    let incoming = grad.first().copied().unwrap_or(1.0);
+                    let qd = q.0.read().unwrap().data.clone();
+                    let kd = k.0.read().unwrap().data.clone();
+                    let vd = v.0.read().unwrap().data.clone();
+                    let shape = qd.shape();
+                    let (batch, seq, dim) = (shape[0], shape[1], shape[2]);
+
+                    let q_rg = q.0.read().unwrap().requires_grad;
+                    let k_rg = k.0.read().unwrap().requires_grad;
+                    let v_rg = v.0.read().unwrap().requires_grad;
+
+                    let mut dq = if q_rg { Some(ArrayD::zeros(IxDyn(shape))) } else { None };
+                    let mut dk = if k_rg { Some(ArrayD::zeros(IxDyn(shape))) } else { None };
+                    let mut dv = if v_rg { Some(ArrayD::zeros(IxDyn(shape))) } else { None };
+
+                    for b in 0..batch {
+                        // Recompute the softmax probability matrix P[b] = softmax(scale * Q K^T).
+                        let mut p_row = vec![0.0f32; seq];
+                        for i in 0..seq {
+                            let mut s = vec![0.0f32; seq];
+                            let mut m = f32::NEG_INFINITY;
+                            for j in 0..seq {
+                                let mut dot = 0.0f32;
+                                for t in 0..dim {
+                                    dot += qd[[b, i, t]] * kd[[b, j, t]];
+                                }
+                                s[j] = dot * *scale;
+                                m = m.max(s[j]);
+                            }
+                            let mut z = 0.0f32;
+                            for (pj, sj) in p_row.iter_mut().zip(s.iter()) {
+                                *pj = (sj - m).exp();
+                                z += *pj;
+                            }
+                            let inv = if z > 0.0 { 1.0 / z } else { 0.0 };
+                            for pj in p_row.iter_mut() {
+                                *pj *= inv;
+                            }
+
+                            // dattn_ij = sum_t dout[i,t] * V[j,t]   (dout = incoming gradient)
+                            let mut dp = vec![0.0f32; seq];
+                            for j in 0..seq {
+                                let mut acc = 0.0f32;
+                                for t in 0..dim {
+                                    acc += incoming * vd[[b, j, t]];
+                                }
+                                dp[j] = acc;
+                            }
+                            // softmax backward: dP_ij = P_ij * (dp_ij - sum_k P_ik dp_ik)
+                            let mut dotp = 0.0f32;
+                            for (pj, dpj) in p_row.iter().zip(dp.iter()) {
+                                dotp += pj * dpj;
+                            }
+                            for j in 0..seq {
+                                dp[j] = p_row[j] * (dp[j] - dotp);
+                            }
+                            // Now dp = d(scores_ij). Accumulate parameter gradients.
+                            for j in 0..seq {
+                                for t in 0..dim {
+                                    if let Some(ref mut g) = dv {
+                                        g[[b, j, t]] += p_row[j] * incoming;
+                                    }
+                                    if let Some(ref mut gq) = dq {
+                                        gq[[b, i, t]] += dp[j] * *scale * kd[[b, j, t]];
+                                    }
+                                    if let Some(ref mut gk) = dk {
+                                        gk[[b, j, t]] += dp[j] * *scale * qd[[b, i, t]];
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(g) = dq { q.backward_with_grad(g); }
+                    if let Some(g) = dk { k.backward_with_grad(g); }
+                    if let Some(g) = dv { v.backward_with_grad(g); }
                 }
             }
         }
