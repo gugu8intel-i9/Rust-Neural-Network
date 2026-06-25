@@ -52,7 +52,7 @@ pub use nn::{
     BatchNorm1D, NormalMoE, FineGrainedMoE, Recursive, RNNCell, FakeQuantize, CSA, HCA,
     attention, flash_attention,
 };
-pub use reasoning::{SwiReasoning, MarkovianRSA};
+pub use reasoning::{SwiReasoning, MarkovianRSA, ChainOfThought, TreeOfThoughts};
 pub use optim::{Optimizer, SGD, Adam, RMSprop, Muon};
 pub use loss::{Loss, MSELoss, CrossEntropyLoss, BCELoss, BCEWithLogitsLoss, L1Loss, HuberLoss};
 pub use train::{SimpleDataLoader, Trainer};

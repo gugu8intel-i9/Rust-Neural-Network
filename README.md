@@ -21,7 +21,8 @@ and [`rayon`](https://crates.io/crates/rayon).
   Clifford-rotor decorrelation + scalar quantization for inference-time KV-cache/activation
   compression.
 - **Training utilities**: `SimpleDataLoader` and a generic `Trainer`.
-- **Reasoning strategies**: `SwiReasoning` and `MarkovianRSA`.
+- **Reasoning strategies**: `ChainOfThought` (CoT), `TreeOfThoughts` (ToT), `SwiReasoning`,
+  and `MarkovianRSA`.
 - **Pure Rust**: no external BLAS required to build (optional BLAS backends available as Cargo features).
 
 ## Installation
@@ -178,6 +179,38 @@ let compressed = rq.forward(&kv_cache);
 
 For training-time quantization with straight-through gradients, use `nn::FakeQuantize` instead.
 
+### Reasoning: Chain of Thought (CoT) & Tree of Thoughts (ToT)
+
+**Chain of Thought** refines a hidden state by applying a shared "thought" transformation
+repeatedly for a fixed number of steps, with residual connections for stability. The whole
+chain is differentiable, so the thought layer trains end-to-end:
+
+```rust
+use rust_nn::reasoning::ChainOfThought;
+use rust_nn::nn::Module;
+use rust_nn::tensor::Tensor;
+
+let cot = ChainOfThought::new(64, 5);        // 64-dim state, 5 reasoning steps
+let state = Tensor::randn(&[4, 64]);
+let refined = cot.forward(&state);           // [4, 64]
+```
+
+**Tree of Thoughts** explores multiple reasoning paths via beam search: at each step every beam
+spawns `branching_factor` candidate thoughts, an evaluator scores them, and only the top
+`beam_width` survive. This is a test-time-compute technique (the selection is non-differentiable;
+gradients flow only through the returned best path):
+
+```rust
+use rust_nn::reasoning::TreeOfThoughts;
+use rust_nn::nn::Module;
+use rust_nn::tensor::Tensor;
+
+let tot = TreeOfThoughts::new(64, 4, 3, 2)   // 64-dim, depth 4, branch 3, keep 2
+    .with_exploration_noise(0.15);
+let state = Tensor::randn(&[4, 64]);
+let best = tot.forward(&state);              // [4, 64] — best reasoning path found
+```
+
 ## Architecture
 
 ### `Tensor`
@@ -264,6 +297,18 @@ cargo test
 
 ## Changelog
 
+### 0.3.1 — Chain of Thought & Tree of Thoughts
+
+- **Chain of Thought (CoT)**: added a differentiable sequential reasoning module that refines a
+  hidden state through a chain of intermediate thought steps, with optional residual connections.
+  Gradients flow through the entire chain. Exposed as `reasoning::ChainOfThought`.
+- **Tree of Thoughts (ToT)**: added a beam-search reasoning module that branches multiple candidate
+  next-states per step, scores them with a learned evaluator, and prunes to the top-K beams.
+  A test-time-compute technique (selection is non-differentiable; gradients flow through the
+  returned best path). Exposed as `reasoning::TreeOfThoughts`.
+- Added `tests/reasoning.rs` covering shape preservation, differentiability (CoT), and beam-search
+  behavior (ToT).
+
 ### 0.3.0 — FlashAttention & RotorQuant, roadmap restored
 
 - **FlashAttention**: added an exact, memory-efficient scaled dot-product attention built on the
@@ -310,8 +355,9 @@ What's done and what's planned:
 
 - [x] **Autograd engine**: reverse-mode automatic differentiation with correct broadcasting.
 - [x] **Core layers & optimizers**: Linear, Dropout, BatchNorm, MoE, RNN; SGD/Adam/RMSprop/Muon.
-- [x] **Attention**: exact, memory-efficient FlashAttention (this release).
+- [x] **Attention**: exact, memory-efficient FlashAttention.
 - [x] **Quantization**: `FakeQuantize` (QAT) + `RotorQuant` (rotation-assisted compression).
+- [x] **Reasoning strategies**: CoT, ToT, Swi-Reasoning, Markovian RSA.
 - [ ] **GPU compute backend**: execute `to_device(Device)` kernels via WebGPU/WGPU/Vulkan/Metal.
       The CPU autograd engine currently handles all real work; the GPU path is stubbed.
 - [ ] **Fused FlashAttention GPU kernels**: SRAM-tiled, IO-aware CUDA/Metal implementations.
