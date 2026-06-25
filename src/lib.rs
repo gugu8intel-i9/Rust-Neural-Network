@@ -45,6 +45,7 @@ pub mod reasoning;
 pub mod quant;
 pub mod mamba;
 pub mod diffusion;
+pub mod rl;
 
 // Re-export main types for convenient access
 pub use tensor::Tensor;
@@ -61,6 +62,10 @@ pub use train::{SimpleDataLoader, Trainer};
 pub use quant::{Rotor, RotorQuant};
 pub use mamba::{MambaBlock, Mamba, HybridMamba};
 pub use diffusion::{NoiseSchedule, DenoiseNet, DDPM, ScheduleType, sinusoidal_embedding};
+pub use rl::{
+    Environment, Reinforce, ActorCritic, Dqn, Ppo, ReplayBuffer, Transition,
+    BanditEnv, ChainEnv, sample_categorical, discounted_returns,
+};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

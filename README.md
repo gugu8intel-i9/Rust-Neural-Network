@@ -21,6 +21,8 @@ and [`rayon`](https://crates.io/crates/rayon).
   input-dependent selective scan, causal conv1d, and SiLU gating — linear O(seq) complexity.
 - **Diffusion**: a full **DDPM** pipeline (forward/reverse process, sinusoidal timestep
   conditioning, linear & cosine schedules, ancestral sampling).
+- **Reinforcement Learning**: REINFORCE, Actor-Critic (A2C), DQN (replay + target net), and
+  PPO, with a Gym-style `Environment` trait and example bandit/chain MDPs.
 - **Quantization**: `FakeQuantize` for QAT, plus **RotorQuant** — block-diagonal Cl(3,0)
   Clifford-rotor decorrelation + scalar quantization for inference-time KV-cache/activation
   compression.
@@ -240,6 +242,39 @@ for step in 0..200 {
 let samples = ddpm.sample(16);                            // generate 16 new samples [16, 8]
 ```
 
+### Reinforcement Learning
+
+`rl` provides a Gym-style [`Environment`](rust_nn::rl::Environment) trait plus four classic and
+modern agents, all built on the autograd engine:
+
+- **REINFORCE** — vanilla policy gradient with a moving-average baseline.
+- **Actor-Critic (A2C)** — policy gradient with a learned value-function baseline.
+- **DQN** — Deep Q-Network with experience replay (`ReplayBuffer`) and a periodic target network.
+- **PPO** — Proximal Policy Optimization with a clipped surrogate objective.
+
+Agents use discrete action spaces and `Vec<f32>` observations. Action sampling is
+non-differentiable; the policy-gradient agents apply the REINFORCE score-function trick
+(backprop through the action's log-probability, weighted by the return/advantage).
+
+```rust
+use rust_nn::rl::{Reinforce, BanditEnv, Environment};
+use rust_nn::optim::Adam;
+use rust_nn::nn::Module;
+
+let mut agent = Reinforce::new(env.observation_dim(), env.num_actions(), 32);
+let mut opt = Adam::new(agent.policy.parameters(), 0.02);
+let mut env = BanditEnv::new(4);                 // implement Environment for your own MDP
+
+for episode in 0..200 {
+    let reward = agent.train_episode(&mut opt, &mut env);
+    if episode % 50 == 0 { println!("ep {episode}: reward {reward:.2}"); }
+}
+let action = agent.act(&env.reset());            // pick an action greedily/stochastically
+```
+
+The included `BanditEnv` (k-armed, with Bernoulli / deterministic / sparse reward variants) and
+`ChainEnv` (a 1-D goal-reaching corridor) are ready to use and exercised by the test suite.
+
 ### Reasoning: Chain of Thought (CoT) & Tree of Thoughts (ToT)
 
 **Chain of Thought** refines a hidden state by applying a shared "thought" transformation
@@ -358,6 +393,20 @@ cargo test
 
 ## Changelog
 
+### 0.5.0 — Reinforcement Learning
+
+- **RL module** (`src/rl.rs`): a Gym-style `Environment` trait plus four agents — `Reinforce`
+  (policy gradient + moving-average baseline), `ActorCritic` (A2C with a learned value head),
+  `Dqn` (experience replay + target network, ε-greedy), and `Ppo` (clipped surrogate objective).
+  Includes `ReplayBuffer`, categorical sampling, and discounted-return computation.
+- Example environments: `BanditEnv` (k-armed bandit, Bernoulli/deterministic/sparse reward
+  variants) and `ChainEnv` (1-D goal-reaching corridor with a configurable step limit).
+- Agents backprop per-step through the autograd engine (gradients accumulate into shared
+  parameters), avoiding deep computation graphs. `ReplayBuffer` and `Dqn` are seedable for
+  reproducible evaluation.
+- Added `tests/rl.rs` (8 tests: all agents learn the optimal bandit arm, DQN reduces TD error,
+  target-network sync, replay buffer, sampling & returns).
+
 ### 0.4.0 — Mamba (full & hybrid) & Diffusion (DDPM)
 
 - **Mamba**: added `MambaBlock` (selective-SSM block with input-dependent Δ/B/C, diagonal `A`,
@@ -437,6 +486,7 @@ What's done and what's planned:
 - [x] **Attention**: exact, memory-efficient FlashAttention.
 - [x] **State Space Models**: full & hybrid Mamba (selective SSM, linear-time).
 - [x] **Diffusion**: DDPM noise schedule + denoising + sampling.
+- [x] **Reinforcement Learning**: REINFORCE, Actor-Critic, DQN, PPO + environments.
 - [x] **Quantization**: `FakeQuantize` (QAT) + `RotorQuant` (rotation-assisted compression).
 - [x] **Reasoning strategies**: CoT, ToT, Swi-Reasoning, Markovian RSA.
 - [ ] **GPU compute backend**: execute `to_device(Device)` kernels via WebGPU/WGPU/Vulkan/Metal.
