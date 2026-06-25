@@ -43,6 +43,8 @@ pub mod loss;
 pub mod train;
 pub mod reasoning;
 pub mod quant;
+pub mod mamba;
+pub mod diffusion;
 
 // Re-export main types for convenient access
 pub use tensor::Tensor;
@@ -57,6 +59,8 @@ pub use optim::{Optimizer, SGD, Adam, RMSprop, Muon};
 pub use loss::{Loss, MSELoss, CrossEntropyLoss, BCELoss, BCEWithLogitsLoss, L1Loss, HuberLoss};
 pub use train::{SimpleDataLoader, Trainer};
 pub use quant::{Rotor, RotorQuant};
+pub use mamba::{MambaBlock, Mamba, HybridMamba};
+pub use diffusion::{NoiseSchedule, DenoiseNet, DDPM, ScheduleType, sinusoidal_embedding};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

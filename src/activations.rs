@@ -9,8 +9,7 @@ pub fn relu(x: &Tensor) -> Tensor {
 
 /// Sigmoid activation: `1 / (1 + exp(-x))`
 pub fn sigmoid(x: &Tensor) -> Tensor {
-    let data = x.data().mapv(|v| 1.0 / (1.0 + (-v).exp()));
-    Tensor::new(data, x.0.read().unwrap().requires_grad)
+    x.sigmoid()
 }
 
 /// Hyperbolic tangent activation: `tanh(x)`

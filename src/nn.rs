@@ -35,13 +35,31 @@ impl Linear {
 
 impl Module for Linear {
     fn forward(&self, input: &Tensor) -> Tensor {
+        let in_shape = input.shape();
+        let out_features = self.weight.shape()[0];
         let weight_t = self.weight.transpose();
-        let mut res = input.matmul(&weight_t);
-        if let Some(ref b) = self.bias {
-            // Broadcasting in ndarray add handles [batch, out] + [out]
-            res = res.add(b);
+
+        if in_shape.len() <= 2 {
+            // Standard 2D path: [batch, in] @ [in, out] = [batch, out].
+            let mut res = input.matmul(&weight_t);
+            if let Some(ref b) = self.bias {
+                res = res.add(b); // broadcast [out] over [batch, out]
+            }
+            res
+        } else {
+            // N-D path (e.g. [batch, seq, in]): flatten leading dims, apply, restore shape.
+            // This makes Linear apply to the last dimension of any tensor (like PyTorch).
+            let in_features = in_shape[in_shape.len() - 1];
+            let leading = in_shape[..in_shape.len() - 1].iter().product::<usize>();
+            let flat = input.reshape(&[leading, in_features]);
+            let mut res = flat.matmul(&weight_t); // [leading, out]
+            if let Some(ref b) = self.bias {
+                res = res.add(b);
+            }
+            let mut out_shape = in_shape.clone();
+            out_shape[in_shape.len() - 1] = out_features;
+            res.reshape(&out_shape)
         }
-        res
     }
 
     fn parameters(&self) -> Vec<Tensor> {
@@ -136,6 +154,19 @@ impl_activation_module!(Sigmoid, crate::activations::sigmoid, "Sigmoid activatio
 impl_activation_module!(Tanh, crate::activations::tanh, "Hyperbolic-tangent activation module.");
 impl_activation_module!(Softmax, crate::activations::softmax, "Softmax activation module (over the last axis).");
 impl_activation_module!(GELU, crate::activations::gelu, "Gaussian Error Linear Unit activation module.");
+
+/// SiLU / Swish activation module: `x * sigmoid(x)`, fully differentiable.
+#[derive(Debug, Clone)]
+pub struct SiLU;
+
+impl Module for SiLU {
+    fn forward(&self, input: &Tensor) -> Tensor {
+        input.silu()
+    }
+    fn parameters(&self) -> Vec<Tensor> {
+        Vec::new()
+    }
+}
 
 /// Inverted dropout. During training, zeroes each element with probability `p` and scales
 /// the kept elements by `1 / (1 - p)` so expectations are preserved. In eval mode it is a no-op.

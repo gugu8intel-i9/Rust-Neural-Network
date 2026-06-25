@@ -17,6 +17,10 @@ and [`rayon`](https://crates.io/crates/rayon).
   `BCEWithLogitsLoss`, `L1Loss`, `HuberLoss`.
 - **Attention**: an exact, memory-efficient **FlashAttention** implementation (online-softmax
   tiling, O(seq) memory, no materialized N×N matrix, fully differentiable).
+- **Mamba**: full (`Mamba`) and hybrid (`HybridMamba`) Selective State Space Models (S6) with
+  input-dependent selective scan, causal conv1d, and SiLU gating — linear O(seq) complexity.
+- **Diffusion**: a full **DDPM** pipeline (forward/reverse process, sinusoidal timestep
+  conditioning, linear & cosine schedules, ancestral sampling).
 - **Quantization**: `FakeQuantize` for QAT, plus **RotorQuant** — block-diagonal Cl(3,0)
   Clifford-rotor decorrelation + scalar quantization for inference-time KV-cache/activation
   compression.
@@ -179,6 +183,63 @@ let compressed = rq.forward(&kv_cache);
 
 For training-time quantization with straight-through gradients, use `nn::FakeQuantize` instead.
 
+### Mamba (Full & Hybrid)
+
+**Mamba** is a Selective State Space Model (S6): it replaces attention's quadratic
+sequence-mixing with a linear-time, **input-dependent** selective scan. `MambaBlock` projects
+to an expanded inner dim, applies a depthwise causal conv1d + SiLU, runs the selective scan
+(`h_t = Ā_t⊙h_{t-1} + B̄_t⊙u_t`, with Δ/B/C predicted from the input and diagonal `A`), gates
+the output, and projects back. The scan, conv1d, softplus, and sigmoid are all fused autograd
+ops with exact backward passes.
+
+```rust
+use rust_nn::mamba::Mamba;
+use rust_nn::nn::Module;
+use rust_nn::tensor::Tensor;
+
+// Full Mamba: d_model=64, d_state=16, expand=2, conv kernel=4, 4 stacked blocks.
+let model = Mamba::new(64, 16, 2, 4, 4);
+let x = Tensor::randn(&[2, 128, 64]);   // [batch, seq, d_model]
+let y = model.forward(&x);              // [2, 128, 64]
+```
+
+**Hybrid Mamba** interleaves Mamba blocks with attention blocks (à la Jamba), combining
+linear-time long-context modeling with attention's precise retrieval:
+
+```rust
+use rust_nn::mamba::HybridMamba;
+use rust_nn::nn::{Sequential, Linear, SiLU, Module};
+
+let model = HybridMamba::new(64)
+    .with_mamba(16, 2, 4)
+    .with_mamba(16, 2, 4)
+    .with_layer(Sequential::new().add(Linear::new(64, 64, true)).add(SiLU)) // attention stand-in
+    .with_mamba(16, 2, 4);
+```
+
+### Diffusion Models (DDPM)
+
+`DDPM` provides the full denoising-diffusion pipeline: a forward (noising) process
+`x_t = √ᾱ_t·x_0 + √(1−ᾱ_t)·ε`, a noise-predicting denoising network conditioned on the timestep
+via a sinusoidal embedding, MSE noise-prediction training, and ancestral sampling from pure
+noise. `Linear` and `Cosine` ("Improved DDPM") schedules are supported.
+
+```rust
+use rust_nn::diffusion::{DDPM, ScheduleType};
+use rust_nn::optim::Adam;
+
+let ddpm = DDPM::new(8, 64, 100, ScheduleType::Linear);   // 8-dim data, 100 steps
+let mut opt = Adam::new(ddpm.parameters(), 0.01);
+
+let x0 = rust_nn::Tensor::randn(&[32, 8]);
+for step in 0..200 {
+    let loss = ddpm.train_batch(&mut opt, &x0);           // one denoising training step
+    if step % 50 == 0 { println!("step {step}: loss {loss:.4}"); }
+}
+
+let samples = ddpm.sample(16);                            // generate 16 new samples [16, 8]
+```
+
 ### Reasoning: Chain of Thought (CoT) & Tree of Thoughts (ToT)
 
 **Chain of Thought** refines a hidden state by applying a shared "thought" transformation
@@ -297,6 +358,24 @@ cargo test
 
 ## Changelog
 
+### 0.4.0 — Mamba (full & hybrid) & Diffusion (DDPM)
+
+- **Mamba**: added `MambaBlock` (selective-SSM block with input-dependent Δ/B/C, diagonal `A`,
+  causal conv1d, SiLU gating, in/out projections), `Mamba` (full stack of pure SSM blocks with
+  residuals — linear O(seq) complexity), and `HybridMamba` (interleaves Mamba + attention blocks,
+  à la Jamba). All fully differentiable.
+- Core Mamba math is a fused **selective-scan** autograd op (`Tensor::selective_scan`) with an
+  exact reverse-scan backward; verified against finite differences for all five inputs. Added
+  supporting fused ops: `conv1d_causal`, `softplus`, and a differentiable `sigmoid`/`silu`
+  (the previous `sigmoid` in activations was forward-only — it now flows gradients).
+- **Linear now supports N-D inputs** (applies to the last dimension), so layers work on
+  `[batch, seq, dim]` tensors, enabling sequence models like Mamba.
+- **Diffusion (DDPM)**: added `NoiseSchedule` (linear & cosine), a `DenoiseNet` MLP with
+  sinusoidal timestep conditioning, `DDPM` with `q_sample`, `train_batch` (MSE noise prediction),
+  and `sample` (ancestral sampling from `x_T ~ N(0,I)`).
+- Added `tests/selective_scan.rs` (gradient checks) and `tests/mamba_diffusion.rs` (shape,
+  differentiability, loss-decrease, sampling, schedule validity).
+
 ### 0.3.1 — Chain of Thought & Tree of Thoughts
 
 - **Chain of Thought (CoT)**: added a differentiable sequential reasoning module that refines a
@@ -356,6 +435,8 @@ What's done and what's planned:
 - [x] **Autograd engine**: reverse-mode automatic differentiation with correct broadcasting.
 - [x] **Core layers & optimizers**: Linear, Dropout, BatchNorm, MoE, RNN; SGD/Adam/RMSprop/Muon.
 - [x] **Attention**: exact, memory-efficient FlashAttention.
+- [x] **State Space Models**: full & hybrid Mamba (selective SSM, linear-time).
+- [x] **Diffusion**: DDPM noise schedule + denoising + sampling.
 - [x] **Quantization**: `FakeQuantize` (QAT) + `RotorQuant` (rotation-assisted compression).
 - [x] **Reasoning strategies**: CoT, ToT, Swi-Reasoning, Markovian RSA.
 - [ ] **GPU compute backend**: execute `to_device(Device)` kernels via WebGPU/WGPU/Vulkan/Metal.
