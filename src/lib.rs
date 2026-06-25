@@ -45,11 +45,14 @@ pub mod reasoning;
 
 // Re-export main types for convenient access
 pub use tensor::Tensor;
-pub use activations::{relu, sigmoid, tanh};
-pub use nn::{Module, Sequential, Linear, ReLU, Flatten, FakeQuantize, CSA, HCA};
+pub use activations::{relu, sigmoid, tanh, softmax, gelu};
+pub use nn::{
+    Module, Sequential, Linear, ReLU, Sigmoid, Tanh, Softmax, GELU, Flatten, Dropout,
+    BatchNorm1D, NormalMoE, FineGrainedMoE, Recursive, RNNCell, FakeQuantize, CSA, HCA,
+};
 pub use reasoning::{SwiReasoning, MarkovianRSA};
 pub use optim::{Optimizer, SGD, Adam, RMSprop, Muon};
-pub use loss::{Loss, MSELoss, CrossEntropyLoss};
+pub use loss::{Loss, MSELoss, CrossEntropyLoss, BCELoss, BCEWithLogitsLoss, L1Loss, HuberLoss};
 pub use train::{SimpleDataLoader, Trainer};
 
 /// Library version

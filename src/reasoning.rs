@@ -106,8 +106,8 @@ impl Module for MarkovianRSA {
         // Aggregate tail ends of chunks (Markovian state transition)
         // Here we sum as a simplified proxy for concatenation/aggregation
         let mut aggregated = traces[0].clone();
-        for i in 1..traces.len() {
-            aggregated = aggregated.add(&traces[i]);
+        for t in traces.iter().skip(1) {
+            aggregated = aggregated.add(t);
         }
         
         // Final projection mapping back to original dimension

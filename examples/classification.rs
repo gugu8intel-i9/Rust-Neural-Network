@@ -1,106 +1,97 @@
-//! MNIST-like digit classification example.
+//! Synthetic classification example.
 //!
-//! This example demonstrates training a simple neural network
-//! on a synthetic digit classification task.
+//! Trains a small MLP with cross-entropy on a linearly-separable-ish synthetic dataset
+//! and reports accuracy. Demonstrates the Trainer + optimizer + loss pipeline.
 
-use rust_nn::tensor::Tensor;
-use rust_nn::nn::{Module, Sequential, Linear, ReLU, Dropout};
-use rust_nn::optim::{Optimizer, Adam};
 use rust_nn::loss::CrossEntropyLoss;
-use rust_nn::train::{SimpleDataLoader, Trainer, TrainConfig};
+use rust_nn::nn::{Linear, Module, ReLU, Sequential};
+use rust_nn::optim::Adam;
+use rust_nn::tensor::Tensor;
+use rust_nn::train::{SimpleDataLoader, Trainer};
+use std::sync::Arc;
 
 fn main() {
-    println!("=== Rust Neural Network Example ===\n");
+    println!("=== Rust Neural Network - Classification Example ===\n");
 
-    // Generate synthetic classification data
-    println!("Generating synthetic data...");
-    let n_samples = 1000;
-    let n_features = 20;
-    let n_classes = 5;
+    // ----- synthetic data: class-dependent feature means -----
+    let n_samples = 600;
+    let n_features = 12;
+    let n_classes = 4;
 
-    let mut inputs_data = Vec::with_capacity(n_samples * n_features);
-    let mut targets_data = Vec::with_capacity(n_samples);
+    println!(
+        "Generating synthetic data: {} samples, {} features, {} classes",
+        n_samples, n_features, n_classes
+    );
+
+    let mut inputs = Vec::with_capacity(n_samples * n_features);
+    let mut onehot = vec![0.0f32; n_samples * n_classes];
+    let mut labels = Vec::with_capacity(n_samples);
 
     for i in 0..n_samples {
         let class = i % n_classes;
-        targets_data.push(class as f64);
-
-        // Generate features with class-dependent means
+        labels.push(class);
+        onehot[i * n_classes + class] = 1.0;
         for j in 0..n_features {
-            let mean = class as f64 * 0.5 + (j as f64) * 0.1;
-            let noise = (rand::random::<f64>() - 0.5) * 0.5;
-            inputs_data.push(mean + noise);
+            let mean = class as f32 * 0.8 + (j as f32) * 0.05;
+            let noise = (rand::random::<f32>() - 0.5) * 0.6;
+            inputs.push(mean + noise);
         }
     }
 
-    let inputs = Tensor::from_vec(inputs_data, vec![n_samples, n_features]);
-    let targets = Tensor::from_vec(targets_data, vec![n_samples]);
+    let inputs = Tensor::from_vec(inputs, vec![n_samples, n_features]);
+    let targets = Tensor::from_vec(onehot, vec![n_samples, n_classes]);
 
-    println!("  Inputs shape: {:?}", inputs.shape());
-    println!("  Targets shape: {:?}", targets.shape());
-    println!("  Classes: {}", n_classes);
-
-    // Define the model
-    println!("\nBuilding model...");
-    let model = Sequential::new()
-        .add(Linear::new(n_features, 64))
-        .add(ReLU)
-        .add(Dropout::new(0.2))
-        .add(Linear::new(64, 32))
-        .add(ReLU)
-        .add(Linear::new(32, n_classes));
-
-    println!("  Model architecture:");
-    println!("    Linear({} -> 64) -> ReLU -> Dropout(0.2)", n_features);
-    println!("    Linear(64 -> 32) -> ReLU");
-    println!("    Linear(32 -> {})", n_classes);
-
-    // Create optimizer and loss
-    let optimizer = Adam::new(0.01)
-        .with_weight_decay(1e-4);
-    let loss_fn = CrossEntropyLoss::new();
-
-    // Create trainer
-    let config = TrainConfig {
-        epochs: 50,
-        learning_rate: 0.01,
-        batch_size: 32,
-        verbose: true,
-        eval_every: 1,
-    };
-
-    let mut trainer = Trainer::new(model, optimizer, loss_fn)
-        .with_config(config);
-
-    // Create data loader
-    let mut train_loader = SimpleDataLoader::new(
-        inputs.clone(),
-        targets.clone(),
-        32,
+    // ----- model -----
+    let model = Arc::new(
+        Sequential::new()
+            .add(Linear::new(n_features, 64, true))
+            .add(ReLU)
+            .add(Linear::new(64, 32, true))
+            .add(ReLU)
+            .add(Linear::new(32, n_classes, true)),
     );
-    train_loader.set_shuffle(true);
+    println!("Model: Linear({n_features}->64) -> ReLU -> Linear(64->32) -> ReLU -> Linear(32->{n_classes})");
 
-    // Train the model
-    println!("\nTraining...");
-    println!("{}", "-".repeat(60));
-    let history = trainer.fit(train_loader);
+    // ----- optimizer + loss + trainer -----
+    let params = model.parameters();
+    let optimizer = Adam::new(params, 0.05);
+    let loss_fn = CrossEntropyLoss;
+    let mut trainer = Trainer::new(model.clone(), optimizer, loss_fn);
 
-    println!("{}", "-".repeat(60));
-    println!("\nTraining complete!");
-    println!("  Final training loss: {:.6}", history.train_loss.last().unwrap());
-    if !history.val_loss.is_empty() {
-        println!("  Final validation accuracy: {:.4}", history.val_accuracy.last().unwrap());
+    // ----- training loop -----
+    println!("\nTraining...\n{}", "-".repeat(50));
+    let epochs = 40;
+    let batch_size = 32;
+    for epoch in 0..epochs {
+        let loader = SimpleDataLoader::new(inputs.clone(), targets.clone(), batch_size);
+        let loss = trainer.train_epoch(loader);
+        if (epoch + 1) % 10 == 0 || epoch == 0 {
+            println!("Epoch {:>2}: avg loss = {:.4}", epoch + 1, loss);
+        }
     }
+    println!("{}", "-".repeat(50));
 
-    // Make predictions on a few samples
-    println!("\nMaking predictions on first 5 samples...");
-    let test_inputs = inputs.reshape(&[n_samples as isize, -1]);
-    let predictions = trainer.predict(&test_inputs.row(0).reshape(&[1, -1]));
-
-    println!("  Sample predictions (logits):");
-    for i in 0..n_classes {
-        println!("    Class {}: {:.4}", i, predictions.get(&[0, i]));
+    // ----- accuracy on the training set -----
+    let logits = model.forward(&inputs);
+    let data = logits.data();
+    let shape = data.shape();
+    let (n, c) = (shape[0], shape[1]);
+    let mut correct = 0usize;
+    for i in 0..n {
+        let mut best = 0usize;
+        let mut best_val = f32::NEG_INFINITY;
+        for j in 0..c {
+            let v = data[[i, j]];
+            if v > best_val {
+                best_val = v;
+                best = j;
+            }
+        }
+        if best == labels[i] {
+            correct += 1;
+        }
     }
-
+    let accuracy = correct as f32 / n as f32;
+    println!("\nTraining accuracy: {:.2}% ({}/{})", accuracy * 100.0, correct, n);
     println!("\n=== Example Complete ===");
 }

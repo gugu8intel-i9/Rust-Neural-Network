@@ -3,9 +3,9 @@
 //! This example demonstrates core tensor operations and
 //! building a simple neural network.
 
-use rust_nn::tensor::Tensor;
-use rust_nn::nn::{Module, Sequential, Linear, ReLU, Sigmoid};
 use rust_nn::activations::{relu, sigmoid, softmax};
+use rust_nn::nn::{Linear, Module, ReLU, Sequential};
+use rust_nn::tensor::Tensor;
 
 fn main() {
     println!("=== Rust Neural Network - Basic Example ===\n");
@@ -52,9 +52,9 @@ fn main() {
     println!("A transposed:\n{}\n", transposed);
 
     // Reduction operations
-    println!("A sum: {:.4}", a.sum());
-    println!("A mean: {:.4}", a.mean());
-    println!("A max: {:.4}", a.max());
+    println!("A sum:   {:.4}", a.sum());
+    println!("A mean:  {:.4}", a.mean());
+    println!("A max:   {:.4}", a.max());
 
     // ==================== Activation Functions ====================
     println!("\n2. Activation Functions");
@@ -64,7 +64,7 @@ fn main() {
     println!("Input: {:?}", x.data());
 
     let relu_out = relu(&x);
-    println!("ReLU:  {:?}", relu_out.data());
+    println!("ReLU:    {:?}", relu_out.data());
 
     let sigmoid_out = sigmoid(&x);
     println!("Sigmoid: {:?}", sigmoid_out.data());
@@ -72,7 +72,7 @@ fn main() {
     let softmax_input = Tensor::from_vec(vec![1.0, 2.0, 3.0], vec![3]);
     let softmax_out = softmax(&softmax_input);
     println!("Softmax([1,2,3]): {:?}", softmax_out.data());
-    println!("  (sum = {:.6})", softmax_out.sum());
+    println!("  (sum = {:.6})", softmax_out.sum().data().iter().copied().next().unwrap());
 
     // ==================== Neural Network ====================
     println!("\n3. Neural Network");
@@ -80,11 +80,11 @@ fn main() {
 
     // Build a simple network
     let model = Sequential::new()
-        .add(Linear::new(10, 32))
+        .add(Linear::new(10, 32, true))
         .add(ReLU)
-        .add(Linear::new(32, 16))
+        .add(Linear::new(32, 16, true))
         .add(ReLU)
-        .add(Linear::new(16, 5));
+        .add(Linear::new(16, 5, true));
 
     println!("Model: Linear(10->32) -> ReLU -> Linear(32->16) -> ReLU -> Linear(16->5)");
 
@@ -93,7 +93,7 @@ fn main() {
     let input = Tensor::randn(&[batch_size, 10]);
     let output = model.forward(&input);
 
-    println!("Input shape: {:?}", input.shape());
+    println!("Input shape:  {:?}", input.shape());
     println!("Output shape: {:?}", output.shape());
     println!("\nOutput (first sample):");
     for i in 0..5 {
@@ -102,9 +102,9 @@ fn main() {
 
     // Get model parameters
     let params = model.parameters();
-    println!("\nModel parameters:");
-    for (name, param) in &params {
-        println!("  {}: {:?}", name, param.shape());
+    println!("\nModel parameters ({} tensors):", params.len());
+    for (i, param) in params.iter().enumerate() {
+        println!("  param {}: {:?}", i, param.shape());
     }
 
     // ==================== Broadcasting ====================
@@ -115,7 +115,7 @@ fn main() {
     let bias = Tensor::from_vec(vec![0.1, 0.2, 0.3], vec![3]);
 
     println!("Matrix (2x3):\n{}", matrix);
-    println!("Bias (3,):\n{}", bias);
+    println!("Bias (3,):\n{}\n", bias);
     println!("Matrix + Bias (broadcasted):\n{}", matrix.add(&bias));
 
     println!("\n=== Example Complete ===");

@@ -1,15 +1,23 @@
 # rust-nn
 
-A high-performance, ergonomic neural network library in Rust.
+A high-performance, ergonomic neural network library in **pure Rust**, with a small but
+correct reverse-mode autograd engine built on top of [`ndarray`](https://crates.io/crates/ndarray)
+and [`rayon`](https://crates.io/crates/rayon).
 
 ## Features
 
-- **Efficient Tensor Operations**: Multi-dimensional tensors with contiguous memory layout, broadcasting, and optimized matrix multiplication
-- **Neural Network Layers**: Linear, Dropout, BatchNorm, MoE (Normal & Fine-grained), DeepSeek Attention (CSA & HCA), FakeQuantize (QAT), and various activation layers
-- **Optimizers**: SGD (with momentum), Adam, RMSprop, and Muon
-- **Loss Functions**: MSE, Cross-Entropy, BCE, Huber, and more
-- **Training Utilities**: Data loaders, learning rate schedulers, early stopping
-- **Pure Rust**: No external BLAS dependencies, compiles on stable Rust
+- **Tensors with autograd**: N-dimensional tensors (f32) that track a computation graph for
+  reverse-mode automatic differentiation — `add`, `sub`, `mul`, `matmul`, `relu`, `reshape`,
+  `transpose`, `sum`, plus fused loss ops. Broadcasting is correctly handled in the backward pass.
+- **Neural network layers**: `Linear`, `Flatten`, `Dropout`, `BatchNorm1D`,
+  `NormalMoE`, `FineGrainedMoE`, `Recursive`, `RNNCell`, `FakeQuantize` (QAT), DeepSeek-style
+  `CSA` / `HCA`, and activation layers `ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `GELU`.
+- **Optimizers**: `SGD` (with momentum), `Adam`, `RMSprop`, `Muon`.
+- **Loss functions** (all fully differentiable): `MSELoss`, `CrossEntropyLoss`, `BCELoss`,
+  `BCEWithLogitsLoss`, `L1Loss`, `HuberLoss`.
+- **Training utilities**: `SimpleDataLoader` and a generic `Trainer`.
+- **Reasoning strategies**: `SwiReasoning` and `MarkovianRSA`.
+- **Pure Rust**: no external BLAS required to build (optional BLAS backends available as Cargo features).
 
 ## Installation
 
@@ -17,207 +25,221 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rust-nn = { path = "." }  # or use a git repository
+rust-nn = { git = "https://github.com/gugu8intel-i9/Rust-Neural-Network" }
 ```
 
 ## Quick Start
 
-### Basic Tensor Operations
+### Basic tensor operations
 
 ```rust
 use rust_nn::tensor::Tensor;
 
-// Create tensors
-let zeros = Tensor::zeros(&[2, 3]);
-let ones = Tensor::ones(&[2, 3]);
-let random = Tensor::randn(&[2, 3]);
-
-// From data
 let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
-
-// Operations
 let b = Tensor::from_vec(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
+
 let sum = a.add(&b);
-let product = a.matmul(&b);  // Matrix multiplication
+let product = a.mul(&b);          // element-wise
+let matmul = a.matmul(&b);        // matrix multiplication
 let reshaped = a.reshape(&[4]);
+let transposed = a.transpose();
 
-// Activations
-use rust_nn::activations::{relu, sigmoid, softmax};
-let activated = relu(&a);
+println!("sum = {:.4}", a.sum());
+println!("mean = {:.4}", a.mean());
+println!("max = {:.4}", a.max());
+println!("element [0,1] = {:.4}", a.get(&[0, 1]));
+
+// Tensors implement Display:
+println!("{a}");
 ```
 
-### Building a Neural Network
+### Activations
 
 ```rust
 use rust_nn::tensor::Tensor;
-use rust_nn::nn::{Module, Sequential, Linear, ReLU, Dropout};
+use rust_nn::activations::{relu, sigmoid, tanh, softmax, gelu};
 
-// Define a model using the Sequential API
+let x = Tensor::from_vec(vec![-2.0, -1.0, 0.0, 1.0, 2.0], vec![5]);
+let _ = relu(&x);
+let _ = sigmoid(&x);
+let _ = tanh(&x);
+let _ = softmax(&x);   // numerically stable softmax over the last axis
+let _ = gelu(&x);
+```
+
+### Building a model
+
+Layers take an explicit `bias: bool` flag:
+
+```rust
+use rust_nn::nn::{Sequential, Linear, ReLU, Module};
+use rust_nn::tensor::Tensor;
+
 let model = Sequential::new()
-    .add(Linear::new(784, 256))
+    .add(Linear::new(784, 256, true))
     .add(ReLU)
-    .add(Dropout::new(0.5))
-    .add(Linear::new(256, 128))
+    .add(Linear::new(256, 128, true))
     .add(ReLU)
-    .add(Linear::new(128, 10));
+    .add(Linear::new(128, 10, true));
 
-// Forward pass
-let input = Tensor::randn(&[32, 784]);  // batch of 32
+let input = Tensor::randn(&[32, 784]);   // batch of 32
 let output = model.forward(&input);
-println!("Output shape: {:?}", output.shape());  // [32, 10]
+println!("Output shape: {:?}", output.shape()); // [32, 10]
 ```
 
-### Training a Model
+### Training a model
+
+Optimizers are constructed with the model's parameters (the parameter tensors are shared by
+reference with the model, so optimizer updates flow straight back into it):
 
 ```rust
+use rust_nn::nn::{Sequential, Linear, ReLU, Module};
+use rust_nn::optim::Adam;
+use rust_nn::loss::{MSELoss, Loss};
+use rust_nn::train::{SimpleDataLoader, Trainer};
 use rust_nn::tensor::Tensor;
-use rust_nn::nn::{Module, Sequential, Linear, ReLU};
-use rust_nn::optim::{Optimizer, Adam};
-use rust_nn::loss::CrossEntropyLoss;
-use rust_nn::train::{SimpleDataLoader, Trainer, TrainConfig};
+use std::sync::Arc;
 
-// Create model
-let model = Sequential::new()
-    .add(Linear::new(784, 256))
-    .add(ReLU)
-    .add(Linear::new(256, 10));
+let model = Arc::new(
+    Sequential::new()
+        .add(Linear::new(784, 256, true))
+        .add(ReLU)
+        .add(Linear::new(256, 10, true)),
+);
 
-// Create optimizer and loss
-let optimizer = Adam::new(0.001);
-let loss_fn = CrossEntropyLoss::new();
+let params = model.parameters();          // shared with `model`
+let optimizer = Adam::new(params, 0.001);
+let loss_fn = MSELoss;
 
-// Create trainer
-let config = TrainConfig {
-    epochs: 10,
-    batch_size: 32,
-    verbose: true,
-    ..Default::default()
-};
+let mut trainer = Trainer::new(model.clone(), optimizer, loss_fn);
 
-let mut trainer = Trainer::new(model, optimizer, loss_fn)
-    .with_config(config);
-
-// Prepare data
 let inputs = Tensor::randn(&[1000, 784]);
-let targets = Tensor::from_vec((0..1000).map(|i| (i % 10) as f64).collect(), vec![1000]);
-let train_loader = SimpleDataLoader::new(inputs, targets, 32);
+let targets = Tensor::randn(&[1000, 10]);
 
-// Train
-trainer.fit(train_loader);
+for epoch in 0..10 {
+    let loader = SimpleDataLoader::new(inputs.clone(), targets.clone(), 32);
+    let loss = trainer.train_epoch(loader);
+    println!("epoch {epoch}: loss = {loss:.4}");
+}
 ```
 
 ## Architecture
 
-### Tensor
+### `Tensor`
 
-The core `Tensor` type provides:
-- Contiguous row-major memory layout
-- Efficient indexing and slicing
-- Broadcasting support for element-wise operations
-- Matrix multiplication with cache-friendly loop ordering
-- Reduction operations (sum, mean, max, argmax)
+The core `Tensor` type (`Arc<RwLock<TensorData>>`) provides:
 
-### Modules (`nn`)
+- Contiguous row-major memory layout and N-dimensional shapes.
+- Element-wise ops (`add`/`sub`/`mul`), matrix multiplication, reductions (`sum`, `mean`, `max`,
+  `min`, `argmax`), indexing (`get`), reshaping and transposition.
+- Reverse-mode autograd: call `.backward()` on any scalar output and read `.grad()` on leaf tensors.
+- A `Display` impl for pretty-printing.
 
-The `Module` trait is the foundation for all neural network components:
+### `Module`
 
 ```rust
-pub trait Module: std::fmt::Debug {
+pub trait Module: std::fmt::Debug + Send + Sync {
     fn forward(&self, input: &Tensor) -> Tensor;
-    fn parameters(&self) -> Vec<(String, Tensor)> { ... }
-    fn gradients(&self) -> Vec<(String, Tensor)> { ... }
-    fn zero_grad(&mut self) { ... }
+    fn parameters(&self) -> Vec<Tensor>;
+    fn set_training(&self, _training: bool) {}
 }
 ```
 
-Built-in modules include:
-- `Linear`: Fully connected layer
-- `NormalMoE`: Standard Mixture of Experts layer
-- `FineGrainedMoE`: Fine-grained Mixture of Experts layer with shared experts
-- `Recursive`: General-purpose recursive layer applying sub-modules multiple times
-- `RNNCell`: Standard Recurrent Neural Network Cell
-- `Dropout`: Dropout regularization
-- `BatchNorm1D`: Batch normalization
-- `ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `GELU`: Activation functions
-- `FakeQuantize`: Quantization Aware Training (QAT) simulation layer via Straight-Through Estimators
-- `CSA`: DeepSeek Compressed Sparse Attention module
-- `HCA`: DeepSeek Heavy Compressed Attention module
+Built-in modules: `Linear`, `Flatten`, `Dropout`, `BatchNorm1D`, `NormalMoE`, `FineGrainedMoE`,
+`Recursive`, `RNNCell`, `FakeQuantize`, `CSA`, `HCA`, `Sequential`, and the activation modules
+`ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `GELU`.
 
-- `Sequential`: Container for stacking layers
+`Sequential::set_training` propagates training/eval mode to its layers (used by `Dropout`).
 
-### Advanced Reasoning Strategies (`reasoning`)
-
-Built-in modern post-training and generation routines for foundational LLM logic:
-- `SwiReasoning`: Switch-Thinking between Latent and Explicit spaces (Pareto-Superior Reasoning)
-- `MarkovianRSA`: Markovian Repeated Sampling and Aggregation (Test-Time-Compute block architecture)
-
-All optimizers implement the `Optimizer` trait:
+### `Optimizer`
 
 ```rust
 pub trait Optimizer {
     fn step(&mut self);
     fn zero_grad(&mut self);
-    fn add_param(&mut self, name: String, param: Tensor, grad: Tensor);
 }
 ```
 
-Available optimizers:
-- `SGD`: Stochastic Gradient Descent with optional momentum
-- `Adam`: Adaptive Moment Estimation
-- `RMSprop`: Root Mean Square Propagation
-- `Muon`: Momentum Orthogonalized by Newton-schulz (approximate RMS-normalized implementation)
+| Optimizer | Constructor |
+|-----------|-------------|
+| `SGD`     | `SGD::new(params, lr, momentum)` |
+| `Adam`    | `Adam::new(params, lr)` |
+| `RMSprop` | `RMSprop::new(params, lr)` |
+| `Muon`    | `Muon::new(params, lr, momentum)` |
 
-### Loss Functions (`loss`)
+### `Loss`
 
 ```rust
 pub trait Loss {
-    fn forward(&self, prediction: &Tensor, target: &Tensor) -> f64;
-    fn backward(&self, prediction: &Tensor, target: &Tensor) -> Tensor;
+    fn forward(&self, prediction: &Tensor, target: &Tensor) -> Tensor;
 }
 ```
 
-Available losses:
-- `MSELoss`: Mean Squared Error (regression)
-- `CrossEntropyLoss`: Cross-Entropy (classification)
-- `BCELoss`: Binary Cross-Entropy
-- `BCEWithLogitsLoss`: BCE with numerically stable sigmoid
-- `L1Loss`: Mean Absolute Error
-- `HuberLoss`: Robust loss for outliers
+Every loss returns a scalar `Tensor`; call `.backward()` on it to populate parameter gradients.
+
+- `MSELoss`, `CrossEntropyLoss` (logits + one-hot, numerically stable),
+  `BCELoss`, `BCEWithLogitsLoss`, `L1Loss`, `HuberLoss`.
 
 ## Examples
 
-Run the included examples:
-
 ```bash
-# Basic tensor operations and simple network
-cargo run --example basic
-
-# Full training example
-cargo run --example classification
+cargo run --example basic           # tensor ops, activations, a small network
+cargo run --example xor             # train an MLP to solve XOR
+cargo run --example classification  # train an MLP with cross-entropy (100% on synthetic data)
+cargo run --example library_usage   # end-to-end mini training loop
 ```
 
-## Performance Considerations & Cross-Platform Optimization
+## Tests
 
-`rust-nn` is designed to be **highly optimized on CPUs (x86_64, Apple Silicon)** and completely compatible with **Linux, Windows, and macOS**.
+Gradient correctness is verified against finite differences:
 
-- **Extreme CPU Training**: Features `.cargo/config.toml` hardware autovectorization (`target-cpu=native`), maximizing AVX2/AVX512 (Intel/AMD) and NEON (Apple M1/M2/M3) speeds natively.
-- **Hardware BLAS Features**: Available through extreme-scaling Cargo features `apple-accelerate` (macOS), `intel-mkl`, and `openblas` (Linux/Windows).
-- **Multi-Threading**: Automatically parallelizes computation across CPU cores using `rayon` block iterators for data batches.
-- **Cross-Platform GPU Compute**: Implements foundational cross-platform compute backend abstraction (`to_device()`) compatible with Nvidia CUDA, Apple Metal, and Vulkan / DX12 powered by WebGPU.
+```bash
+cargo test
+```
 
-## 🚀 Next-Generation Roadmap
+## Performance & cross-platform notes
 
-- [ ] **Distributed Training**: Support for multi-node training using MPI/NCCL
-- [ ] **WGPU Compute Backend**: Full pipeline GPU compute execution leveraging WebGPU/Vulkan/Metal API
-- [ ] **Graph Compilation**: XLA-style JIT compilation for operator fusion
-- [ ] **FlashAttention**: Memory-efficient exact attention mechanism
-- [ ] **Quantization**: INT8 and FP16 inference & QAT
-- [ ] **ONNX Ecosystem**: Import and export models to ONNX directly
+- `.cargo/config.toml` enables `target-cpu=native` for autovectorization (AVX2/AVX-512 on x86,
+  NEON on Apple Silicon).
+- Optional BLAS backends: `apple-accelerate`, `intel-mkl`, `openblas` Cargo features.
+- `rayon` parallelizes batch computation across cores.
+- A cross-platform GPU backend is stubbed via `to_device(Device)` (CPU/Gpu/Metal/Cuda); the
+  WebGPU/WGPU execution path remains on the roadmap.
+
+## Changelog
+
+### 0.2.0 — bug fixes & missing features
+
+This release makes the crate **actually compile and train**. Notable fixes:
+
+- **Library did not compile**: removed a duplicate `#[derive(Debug)]` on `Device` and added the
+  missing `Debug` impl for `TensorData`.
+- **Broken broadcasting in autograd** (`Add`/`Sub`/`Mul` backward): gradients were not reduced to
+  operand shape, so a `Linear` layer's **bias gradient had the wrong shape and panicked the
+  optimizer** on any batched input. Broadcasting is now undone correctly in the backward pass.
+- **Biases never trained**: `Linear` created its bias with `requires_grad = false`, so bias
+  parameters received no gradients and were never updated. Bias is now trainable.
+- **`CrossEntropyLoss` did not train**: it computed a loss value but returned a leaf tensor with no
+  creator, so `backward()` never reached the weights. Replaced with a fused, numerically-stable
+  softmax + cross-entropy autograd op with an exact gradient. Added `BCELoss`,
+  `BCEWithLogitsLoss`, `L1Loss`, `HuberLoss` (all differentiable) the same way.
+- **`FakeQuantize` did not quantize**: it computed `scale` but never applied it. It now performs
+  `clamp(round(x / scale), qmin, qmax) * scale`.
+- **`RNNCell` method shadowing**: the `Module` impl had confusing duplicate `forward`/`parameters`
+  methods; the step function is now `RNNCell::step` and the recursion-prone `parameters` was cleaned up.
+- **`Sequential::set_training` was a no-op**; it now propagates to its layers so `Dropout`
+  respects training/eval mode.
+- Added missing pieces referenced by docs/examples: `Tensor` `mean`/`max`/`min`/`argmax`/`get` and
+  `Display`; `softmax` and `gelu` activations; `Sigmoid`, `Tanh`, `Softmax`, `GELU`, `Dropout`,
+  `BatchNorm1D` modules; full loss re-exports.
+- Rewrote all four examples so they compile and run against the real API.
+- Fixed `Cargo.toml` metadata: corrected the license (`AGPL-3.0-only`) and repository URL.
+- Added a gradient-correctness test suite (`tests/grad_check.rs`).
 
 ## License
 
-AGPL-3.0 license
+AGPL-3.0-only. See [LICENSE](LICENSE).
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please feel free to open an issue or submit a Pull Request.

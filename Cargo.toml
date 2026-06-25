@@ -1,13 +1,13 @@
 [package]
 name = "rust-nn"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A high-performance, ergonomic neural network library in Rust"
-license = "MIT"
+license = "AGPL-3.0-only"
 keywords = ["neural-network", "deep-learning", "machine-learning", "tensor"]
 categories = ["science"]
 readme = "README.md"
-repository = "https://github.com/yourusername/rust-nn"
+repository = "https://github.com/gugu8intel-i9/Rust-Neural-Network"
 documentation = "https://docs.rs/rust-nn"
 
 [lib]

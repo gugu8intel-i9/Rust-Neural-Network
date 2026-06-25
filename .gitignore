@@ -1,0 +1,17 @@
+# Rust build artifacts
+/target
+**/target
+
+# Cargo lockfile is kept for the binary/examples, ignored for lib-only builds
+# (kept here intentionally since this crate ships runnable examples)
+
+# IDE / editor
+.idea/
+.vscode/
+*.iml
+*.swp
+.DS_Store
+
+# Profiles / coverage
+*.profraw
+/cov

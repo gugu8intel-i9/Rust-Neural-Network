@@ -1,7 +1,7 @@
 use rust_nn::tensor::Tensor;
 use rust_nn::nn::{Sequential, Linear, ReLU, Module};
-use rust_nn::optim::{Optimizer, Adam};
-use rust_nn::loss::{MSELoss, Loss};
+use rust_nn::optim::Adam;
+use rust_nn::loss::MSELoss;
 use rust_nn::train::{SimpleDataLoader, Trainer};
 use std::sync::Arc;
 
