@@ -29,6 +29,7 @@ and [`rayon`](https://crates.io/crates/rayon).
 - **Training utilities**: `SimpleDataLoader` and a generic `Trainer`.
 - **Reasoning strategies**: `ChainOfThought` (CoT), `TreeOfThoughts` (ToT), `SwiReasoning`,
   and `MarkovianRSA`.
+- **Self-Improvement (RLAIF)**: `SelfImprover` loop with heuristic or reward-model `Critic` evaluations allowing models to self-train on unlabelled data.
 - **Pure Rust**: no external BLAS required to build (optional BLAS backends available as Cargo features).
 
 ## Installation

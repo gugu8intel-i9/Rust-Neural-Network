@@ -46,6 +46,7 @@ pub mod quant;
 pub mod mamba;
 pub mod diffusion;
 pub mod rl;
+pub mod self_improve;
 
 // Re-export main types for convenient access
 pub use tensor::Tensor;
@@ -66,6 +67,7 @@ pub use rl::{
     Environment, Reinforce, ActorCritic, Dqn, Ppo, ReplayBuffer, Transition,
     BanditEnv, ChainEnv, sample_categorical, discounted_returns,
 };
+pub use self_improve::{Critic, SelfImprover};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
