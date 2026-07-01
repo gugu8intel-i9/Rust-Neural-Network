@@ -48,6 +48,7 @@ pub mod diffusion;
 pub mod rl;
 pub mod self_improve;
 pub mod looped_transformer;
+pub mod tokenizer;
 
 // Re-export main types for convenient access
 pub use tensor::Tensor;
@@ -65,6 +66,7 @@ pub use quant::{Rotor, RotorQuant};
 pub use mamba::{MambaBlock, Mamba, HybridMamba};
 pub use diffusion::{NoiseSchedule, DenoiseNet, DDPM, ScheduleType, sinusoidal_embedding};
 pub use looped_transformer::{LoopedTransformer, Transformer, TransformerBlock, MultiHeadAttention};
+pub use tokenizer::{BpeTokenizer, MergeScoring};
 pub use rl::{
     Environment, Reinforce, ActorCritic, Dqn, Ppo, ReplayBuffer, Transition,
     BanditEnv, ChainEnv, sample_categorical, discounted_returns,

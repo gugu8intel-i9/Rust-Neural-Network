@@ -26,6 +26,9 @@ and [`rayon`](https://crates.io/crates/rayon).
 - **Looped Transformer**: weight-shared iterative transformer (Universal Transformer / LoopLM
   style) — O(k) params but O(k·T) effective depth, with multi-head FlashAttention, pre-norm
   LayerNorm, timestep conditioning, and optional adaptive halting (ACT).
+- **Tokenizer**: a high-performance byte-level BPE tokenizer with **information-theoretic merge
+  scoring** (frequency, PMI, or hybrid), flat contiguous vocab storage (memcpy decode), parallel
+  training & batch encoding, regex-free pre-tokenization, and guaranteed lossless round-trip.
 - **Quantization**: `FakeQuantize` for QAT, plus **RotorQuant** — block-diagonal Cl(3,0)
   Clifford-rotor decorrelation + scalar quantization for inference-time KV-cache/activation
   compression.
@@ -308,6 +311,30 @@ let (y, loops_used) = model.forward_with_loops(&x); // loops_used <= 16
 A standard (non-looped) `Transformer` with independently-parameterized layers is also available
 for comparison.
 
+### Tokenizer (BPE)
+
+A high-performance byte-level BPE tokenizer with **information-theoretic merge scoring**. Unlike
+standard BPE (frequency-only), it can merge using **PMI** (Pointwise Mutual Information) — pairs
+that co-occur far more than chance predicts — yielding more semantically coherent subwords.
+
+```rust
+use rust_nn::tokenizer::{BpeTokenizer, MergeScoring};
+
+// Train on a corpus. PMI scoring finds more meaningful merges than raw frequency.
+let corpus = "the quick brown fox jumps over the lazy dog ...";
+let tok = BpeTokenizer::train(corpus, 1000, MergeScoring::PMI);
+
+let ids = tok.encode("the quick fox");        // Vec<u32>
+let text = tok.decode(&ids);                  // "the quick fox" (lossless round-trip)
+
+// Batch encode/decode in parallel (rayon):
+let batch = tok.encode_batch(&["the fox".into(), "the dog".into()]);
+
+// Analytics + offsets:
+let ratio = tok.compression_ratio("the quick brown fox"); // tokens/char
+let spans = tok.encode_with_offsets("hello");             // (id, byte-range) pairs
+```
+
 ### Reasoning: Chain of Thought (CoT) & Tree of Thoughts (ToT)
 
 **Chain of Thought** refines a hidden state by applying a shared "thought" transformation
@@ -426,6 +453,22 @@ cargo test
 
 ## Changelog
 
+### 0.7.0 — High-performance BPE Tokenizer
+
+- **BpeTokenizer**: a byte-level BPE tokenizer with three **pluggable merge-scoring strategies**
+  — `Frequency` (classic), `PMI` (Pointwise Mutual Information, the WordPiece insight), and
+  `Hybrid` (a normalized blend). PMI finds statistically meaningful merges rather than just
+  frequent ones.
+- **Flat contiguous vocab storage**: all token bytes live in one `Vec<u8>` with an offsets array,
+  so decode is a pair of memcpy operations per token (no per-token allocation).
+- **Parallel training** (rayon merge counting) and **parallel batch encode/decode**.
+- **Regex-free pre-tokenizer**: a hand-written byte scanner (no `regex` dependency) with proper
+  multibyte-UTF-8 grouping and lossless partition guarantees.
+- APIs: `encode`, `encode_with_offsets`, `decode`, `encode_batch`, `decode_batch`,
+  `count_tokens`, `compression_ratio`, `save`/`load`, special tokens.
+- 17 unit tests covering round-trip (ASCII, unicode, emoji, raw bytes), all scoring modes,
+  pre-tokenization partition, offsets, batch, save/load, determinism.
+
 ### 0.6.0 — Looped Transformer
 
 - **LoopedTransformer**: a weight-shared transformer block applied recurrently for `T` loops,
@@ -537,6 +580,7 @@ What's done and what's planned:
 - [x] **Reinforcement Learning**: REINFORCE, Actor-Critic, DQN, PPO + environments.
 - [x] **Quantization**: `FakeQuantize` (QAT) + `RotorQuant` (rotation-assisted compression).
 - [x] **Reasoning strategies**: CoT, ToT, Swi-Reasoning, Markovian RSA.
+- [x] **Tokenizer**: high-performance byte-level BPE with PMI scoring.
 - [ ] **GPU compute backend**: execute `to_device(Device)` kernels via WebGPU/WGPU/Vulkan/Metal.
       The CPU autograd engine currently handles all real work; the GPU path is stubbed.
 - [ ] **Fused FlashAttention GPU kernels**: SRAM-tiled, IO-aware CUDA/Metal implementations.
