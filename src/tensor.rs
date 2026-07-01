@@ -103,6 +103,11 @@ pub enum Op {
     /// Fused layer normalization over the last axis. `(input, gamma, beta, eps)`.
     /// Exact backward for input, gamma, and beta.
     LayerNorm(Tensor, Tensor, Tensor, f32),
+    /// Fused Rotary Position Embedding (RoPE). `(input, cos_flat, sin_flat, half_dim)`.
+    /// `cos_flat`/`sin_flat` are the precomputed `[seq, dim]` rotation tables (flattened);
+    /// `half_dim = dim/2`. Forward applies the GPT-NeoX/Llama rotate-half convention;
+    /// backward is exact (transpose of the rotation = negate sin).
+    Rope(Tensor, Vec<f32>, Vec<f32>, usize),
 }
 
 /// Numerically stable softmax over the last axis of a dynamic array.
@@ -744,6 +749,59 @@ impl Tensor {
         res
     }
 
+    /// Fused **Rotary Position Embedding (RoPE)** application.
+    ///
+    /// Applies the GPT-NeoX / Llama rotate-half convention:
+    /// ```text
+    /// out = x * cos + rotate_half(x) * sin
+    /// ```
+    /// where `rotate_half([x1 | x2]) = [-x2 | x1]` (split last dim into two halves).
+    ///
+    /// - `cos`/`sin`: precomputed tables of shape `[seq, dim]` (broadcast over leading dims).
+    /// - `half_dim`: `dim / 2`.
+    ///
+    /// Exact backward: the transpose of a rotation by angle θ is rotation by −θ, which equals
+    /// `grad_out * cos − rotate_half(grad_out) * sin`. Fully differentiable.
+    pub fn apply_rope(x: &Tensor, cos: &[f32], sin: &[f32], half_dim: usize) -> Tensor {
+        let xflat: Vec<f32> = x.data().iter().copied().collect();
+        let shape = x.shape();
+        assert!(!shape.is_empty(), "apply_rope: input must be non-scalar");
+        let dim = *shape.last().unwrap();
+        assert_eq!(dim, half_dim * 2, "apply_rope: dim must be 2*half_dim");
+        let seq = if shape.len() >= 2 { shape[shape.len() - 2] } else { 1 };
+        assert_eq!(cos.len(), seq * dim, "apply_rope: cos table size mismatch");
+        assert_eq!(sin.len(), seq * dim, "apply_rope: sin table size mismatch");
+
+        let leading = xflat.len() / (seq * dim); // batch * heads (or batch)
+        let mut out = vec![0.0f32; xflat.len()];
+
+        for l in 0..leading {
+            for s in 0..seq {
+                let cos_row = &cos[s * dim..(s + 1) * dim];
+                let sin_row = &sin[s * dim..(s + 1) * dim];
+                let xbase = l * seq * dim + s * dim;
+                // x1 = x[..half_dim], x2 = x[half_dim..]; rotate_half = [-x2, x1]
+                for i in 0..half_dim {
+                    let xi = xflat[xbase + i];
+                    let xj = xflat[xbase + half_dim + i];
+                    // out[i] = x[i]*cos[i] + (-x[half+i])*sin[i] = x[i]*cos[i] - xj*sin[i]
+                    out[xbase + i] = xi * cos_row[i] - xj * sin_row[i];
+                    // out[half+i] = xj*cos[half+i] + xi*sin[half+i]
+                    out[xbase + half_dim + i] = xj * cos_row[half_dim + i] + xi * sin_row[half_dim + i];
+                }
+            }
+        }
+
+        let out_arr = ArrayD::from_shape_vec(IxDyn(&shape), out).unwrap();
+        let requires_grad = x.0.read().unwrap().requires_grad;
+        let res = Tensor::new(out_arr, requires_grad);
+        if requires_grad {
+            res.0.write().unwrap().creator =
+                Some(Arc::new(Op::Rope(x.clone(), cos.to_vec(), sin.to_vec(), half_dim)));
+        }
+        res
+    }
+
     pub fn transpose(&self) -> Tensor {
         let data = self.0.read().unwrap().data.clone().reversed_axes();
         let res = Tensor::new(data, self.0.read().unwrap().requires_grad);
@@ -1269,6 +1327,21 @@ impl Tensor {
                         input.backward_with_grad(
                             ArrayD::from_shape_vec(IxDyn(&data_shape), dx).unwrap(),
                         );
+                    }
+                }
+                Op::Rope(x, cos, sin, half_dim) => {
+                    if x.0.read().unwrap().requires_grad {
+                        // Backward: transpose of rotation R(θ) = R(−θ).
+                        // grad_x = grad_out * cos − rotate_half(grad_out) * sin
+                        // which is apply_rope with negated sin.
+                        let neg_sin: Vec<f32> = sin.iter().map(|&s| -s).collect();
+                        let dx = Tensor::apply_rope(
+                            &Tensor::new(grad.clone(), false),
+                            cos,
+                            &neg_sin,
+                            *half_dim,
+                        );
+                        x.backward_with_grad(dx.data());
                     }
                 }
             }

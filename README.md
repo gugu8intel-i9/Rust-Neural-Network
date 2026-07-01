@@ -311,6 +311,30 @@ let (y, loops_used) = model.forward_with_loops(&x); // loops_used <= 16
 A standard (non-looped) `Transformer` with independently-parameterized layers is also available
 for comparison.
 
+### Positional Encodings
+
+A full suite of position-encoding strategies, centered on a **fused exact-gradient RoPE** (the
+dominant method in modern LLMs like Llama, Qwen, and DeepSeek):
+
+```rust
+use rust_nn::position::{RoPE, CARoPE, AlibiBias};
+
+// Standard RoPE (Llama default): rotate Q/K by position-dependent angles.
+let rope = RoPE::new(64, 2048);              // head_dim=64, max_seq=2048
+let q_rotated = rope.apply(&q);              // exact backward, norm-preserving
+
+// YaRN: extend a 2048-trained model to 8192 context.
+let yarn = RoPE::yarn(64, 8192, 10000.0, 4.0);
+
+// CARoPE (novel): context-aware frequencies from token embeddings.
+let carope = CARoPE::new(64, 512, 2048);      // head_dim, input_dim, max_seq
+let q_rotated = carope.apply(&q, &embeddings); // input-dependent phase shifts
+
+// ALiBi: additive distance bias on attention scores (no learned params).
+let alibi = AlibiBias::new(8);                 // 8 heads
+let bias = alibi.bias_matrix(seq_len);         // [heads, seq, seq]
+```
+
 ### Tokenizer (BPE)
 
 A high-performance byte-level BPE tokenizer with **information-theoretic merge scoring**. Unlike
@@ -453,6 +477,21 @@ cargo test
 
 ## Changelog
 
+### 0.8.0 — Positional Encodings (RoPE / YaRN / ALiBi / CARoPE)
+
+- **RoPE**: fused exact-gradient Rotary Position Embedding (the dominant positional encoding in
+  modern LLMs). Precomputes cos/sin tables; applies via a fused autograd op with exact backward
+  (transpose of the rotation). Norm-preserving, relative-position, with long-term decay.
+- **YaRN**: NTK-aware frequency scaling for context-window extension (`RoPE::yarn`).
+- **ALiBi**: head-dependent linear distance bias on attention scores (`AlibiBias`), with the
+  geometric slope sequence from the paper. No learned parameters; excellent extrapolation.
+- **CARoPE** (novel): Context-Aware RoPE where frequencies are input-dependent (generated from
+  token embeddings via a learned projection), producing context-sensitive phase shifts.
+- **SinusoidalPE / LearnedPE**: classic additive (absolute) position embeddings, plus a
+  unified `PositionalEncoding` enum.
+- 17 tests covering shape preservation, norm preservation, position-0 identity, gradient
+  correctness (finite-difference), YaRN extension, ALiBi properties, CARoPE novelty, and more.
+
 ### 0.7.0 — High-performance BPE Tokenizer
 
 - **BpeTokenizer**: a byte-level BPE tokenizer with three **pluggable merge-scoring strategies**
@@ -573,7 +612,8 @@ What's done and what's planned:
 
 - [x] **Autograd engine**: reverse-mode automatic differentiation with correct broadcasting.
 - [x] **Core layers & optimizers**: Linear, Dropout, BatchNorm, MoE, RNN; SGD/Adam/RMSprop/Muon.
-- [x] **Attention**: exact, memory-efficient FlashAttention + multi-head.
+- [x] **Attention**: exact, memory-efficient FlashAttention + multi-head, with RoPE.
+- [x] **Positional Encodings**: RoPE, YaRN, ALiBi, CARoPE, sinusoidal, learned.
 - [x] **Looped Transformer**: weight-shared iterative computation (Universal Transformer style).
 - [x] **State Space Models**: full & hybrid Mamba (selective SSM, linear-time).
 - [x] **Diffusion**: DDPM noise schedule + denoising + sampling.
