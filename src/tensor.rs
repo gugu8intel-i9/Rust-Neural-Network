@@ -98,6 +98,11 @@ pub enum Op {
     Softplus(Tensor),
     /// Fused sigmoid. `(x,)`. Forward `1/(1+e^-x)`, backward `grad * sig*(1-sig)`.
     Sigmoid(Tensor),
+    /// Permute (transpose) axes. `(input, axes)`. Backward applies the inverse permutation.
+    Permute(Tensor, Vec<usize>),
+    /// Fused layer normalization over the last axis. `(input, gamma, beta, eps)`.
+    /// Exact backward for input, gamma, and beta.
+    LayerNorm(Tensor, Tensor, Tensor, f32),
 }
 
 /// Numerically stable softmax over the last axis of a dynamic array.
@@ -668,6 +673,77 @@ impl Tensor {
         Tensor::mul(self, &sig)
     }
 
+    /// Permute (reorder) the axes of this tensor. `axes` must be a permutation of
+    /// `0..ndim`. Fully differentiable (backward applies the inverse permutation).
+    pub fn permute(&self, axes: &[usize]) -> Tensor {
+        // Materialize as a contiguous (standard C-order) array so that subsequent reshapes work.
+        let (data, out_shape) = {
+            let inner = self.0.read().unwrap();
+            let permuted = inner.data.clone().permuted_axes(IxDyn(axes));
+            let out_shape = permuted.shape().to_vec();
+            let flat: Vec<f32> = permuted.iter().copied().collect();
+            let data = ArrayD::from_shape_vec(IxDyn(&out_shape), flat).unwrap();
+            (data, out_shape)
+        };
+        let _ = out_shape; // already captured in data's shape
+        let res = Tensor::new(data, self.0.read().unwrap().requires_grad);
+        if self.0.read().unwrap().requires_grad {
+            res.0.write().unwrap().creator =
+                Some(Arc::new(Op::Permute(self.clone(), axes.to_vec())));
+        }
+        res
+    }
+
+    /// Layer normalization over the **last axis**. `gamma` and `beta` are `[d]`-shaped affine
+    /// parameters. The normalization statistics (mean/var) are computed per-position; the
+    /// affine transform flows gradients to `gamma` and `beta`. Exact backward for all three.
+    pub fn layer_norm(&self, gamma: &Tensor, beta: &Tensor, eps: f32) -> Tensor {
+        let data: Vec<f32> = self.data().iter().copied().collect();
+        let gd: Vec<f32> = gamma.data().iter().copied().collect();
+        let bd: Vec<f32> = beta.data().iter().copied().collect();
+        let shape = self.shape();
+        assert!(
+            !shape.is_empty() && shape[shape.len() - 1] == gd.len() && gd.len() == bd.len(),
+            "layer_norm: last dim {} must match gamma/beta len {}",
+            shape.last().copied().unwrap_or(0),
+            gd.len()
+        );
+        let n = *shape.last().unwrap();
+        let nrows = data.len() / n;
+
+        let mut out = vec![0.0f32; data.len()];
+        for row in 0..nrows {
+            let base = row * n;
+            let mut mean = 0.0f32;
+            for j in 0..n {
+                mean += data[base + j];
+            }
+            mean /= n as f32;
+            let mut var = 0.0f32;
+            for j in 0..n {
+                let d = data[base + j] - mean;
+                var += d * d;
+            }
+            var /= n as f32;
+            let inv_std = 1.0 / (var + eps).sqrt();
+            for j in 0..n {
+                let x_hat = (data[base + j] - mean) * inv_std;
+                out[base + j] = x_hat * gd[j] + bd[j];
+            }
+        }
+
+        let out = ArrayD::from_shape_vec(IxDyn(&shape), out).unwrap();
+        let requires_grad = self.0.read().unwrap().requires_grad
+            || gamma.0.read().unwrap().requires_grad
+            || beta.0.read().unwrap().requires_grad;
+        let res = Tensor::new(out, requires_grad);
+        if requires_grad {
+            res.0.write().unwrap().creator =
+                Some(Arc::new(Op::LayerNorm(self.clone(), gamma.clone(), beta.clone(), eps)));
+        }
+        res
+    }
+
     pub fn transpose(&self) -> Tensor {
         let data = self.0.read().unwrap().data.clone().reversed_axes();
         let res = Tensor::new(data, self.0.read().unwrap().requires_grad);
@@ -1083,6 +1159,116 @@ impl Tensor {
                             if v >= 0.0 { 1.0 / (1.0 + (-v).exp()) } else { let e = v.exp(); e / (1.0 + e) }
                         });
                         x.backward_with_grad(&grad * &sig * &(1.0 - &sig));
+                    }
+                }
+                Op::Permute(input, axes) => {
+                    if input.0.read().unwrap().requires_grad {
+                        // Inverse permutation.
+                        let mut inv = vec![0usize; axes.len()];
+                        for (i, &a) in axes.iter().enumerate() {
+                            inv[a] = i;
+                        }
+                        // Materialize contiguous so downstream reshapes work.
+                        let permuted = grad.permuted_axes(IxDyn(&inv));
+                        let flat: Vec<f32> = permuted.iter().copied().collect();
+                        let contig =
+                            ArrayD::from_shape_vec(IxDyn(permuted.shape()), flat).unwrap();
+                        input.backward_with_grad(contig);
+                    }
+                }
+                Op::LayerNorm(input, gamma, beta, _eps) => {
+                    let data: Vec<f32> = input.0.read().unwrap().data.iter().copied().collect();
+                    let gd: Vec<f32> = gamma.0.read().unwrap().data.iter().copied().collect();
+                    let shape = data.len();
+                    let data_shape = input.0.read().unwrap().data.shape().to_vec();
+                    let n = *data_shape.last().unwrap();
+                    let nrows = shape / n;
+                    let eps = *_eps;
+                    let grad_flat: Vec<f32> = grad.iter().copied().collect();
+
+                    // Recompute x_hat per row.
+                    let mut x_hat = vec![0.0f32; shape];
+                    let mut inv_stds = vec![0.0f32; nrows];
+                    #[allow(clippy::needless_range_loop)]
+                    for row in 0..nrows {
+                        let base = row * n;
+                        let mut mean = 0.0f32;
+                        for j in 0..n {
+                            mean += data[base + j];
+                        }
+                        mean /= n as f32;
+                        let mut var = 0.0f32;
+                        for j in 0..n {
+                            let d = data[base + j] - mean;
+                            var += d * d;
+                        }
+                        var /= n as f32;
+                        let inv_std = 1.0 / (var + eps).sqrt();
+                        inv_stds[row] = inv_std;
+                        for j in 0..n {
+                            x_hat[base + j] = (data[base + j] - mean) * inv_std;
+                        }
+                    }
+
+                    let in_rg = input.0.read().unwrap().requires_grad;
+                    let g_rg = gamma.0.read().unwrap().requires_grad;
+                    let b_rg = beta.0.read().unwrap().requires_grad;
+
+                    if g_rg {
+                        let mut dgamma = vec![0.0f32; n];
+                        for row in 0..nrows {
+                            let base = row * n;
+                            for j in 0..n {
+                                dgamma[j] += grad_flat[base + j] * x_hat[base + j];
+                            }
+                        }
+                        gamma.backward_with_grad(
+                            ArrayD::from_shape_vec(IxDyn(&[n]), dgamma).unwrap(),
+                        );
+                    }
+                    if b_rg {
+                        let mut dbeta = vec![0.0f32; n];
+                        for row in 0..nrows {
+                            let base = row * n;
+                            for j in 0..n {
+                                dbeta[j] += grad_flat[base + j];
+                            }
+                        }
+                        beta.backward_with_grad(
+                            ArrayD::from_shape_vec(IxDyn(&[n]), dbeta).unwrap(),
+                        );
+                    }
+                    if in_rg {
+                        // dx_hat = dy * gamma
+                        let mut dx_hat = vec![0.0f32; shape];
+                        for row in 0..nrows {
+                            let base = row * n;
+                            for j in 0..n {
+                                dx_hat[base + j] = grad_flat[base + j] * gd[j];
+                            }
+                        }
+                        // dx = inv_std/N * (N*dx_hat - sum(dx_hat) - x_hat*sum(dx_hat*x_hat))
+                        let mut dx = vec![0.0f32; shape];
+                        #[allow(clippy::needless_range_loop)]
+                        for row in 0..nrows {
+                            let base = row * n;
+                            let mut sum_dxh = 0.0f32;
+                            let mut sum_dxh_xh = 0.0f32;
+                            for j in 0..n {
+                                sum_dxh += dx_hat[base + j];
+                                sum_dxh_xh += dx_hat[base + j] * x_hat[base + j];
+                            }
+                            let inv = inv_stds[row] / n as f32;
+                            for j in 0..n {
+                                dx[base + j] = inv
+                                    * (n as f32 * dx_hat[base + j]
+                                        - sum_dxh
+                                        - x_hat[base + j] * sum_dxh_xh);
+                            }
+                        }
+                        input.backward_with_grad(
+                            ArrayD::from_shape_vec(IxDyn(&data_shape), dx).unwrap(),
+                        );
                     }
                 }
             }

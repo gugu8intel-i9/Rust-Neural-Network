@@ -23,6 +23,9 @@ and [`rayon`](https://crates.io/crates/rayon).
   conditioning, linear & cosine schedules, ancestral sampling).
 - **Reinforcement Learning**: REINFORCE, Actor-Critic (A2C), DQN (replay + target net), and
   PPO, with a Gym-style `Environment` trait and example bandit/chain MDPs.
+- **Looped Transformer**: weight-shared iterative transformer (Universal Transformer / LoopLM
+  style) — O(k) params but O(k·T) effective depth, with multi-head FlashAttention, pre-norm
+  LayerNorm, timestep conditioning, and optional adaptive halting (ACT).
 - **Quantization**: `FakeQuantize` for QAT, plus **RotorQuant** — block-diagonal Cl(3,0)
   Clifford-rotor decorrelation + scalar quantization for inference-time KV-cache/activation
   compression.
@@ -276,6 +279,35 @@ let action = agent.act(&env.reset());            // pick an action greedily/stoc
 The included `BanditEnv` (k-armed, with Bernoulli / deterministic / sparse reward variants) and
 `ChainEnv` (a 1-D goal-reaching corridor) are ready to use and exercised by the test suite.
 
+### Looped Transformer
+
+A **Looped Transformer** reuses a single weight-shared transformer block across `T` loop
+iterations, achieving deep computation (O(k·T) effective depth) with very few parameters
+(O(k)) — as in Universal Transformers and ByteDance's Ouro-1.4B. Each iteration applies the
+shared pre-norm attention + FFN block with a sinusoidal **timestep conditioning** signal and a
+residual connection:
+
+```rust
+use rust_nn::looped_transformer::LoopedTransformer;
+use rust_nn::nn::Module;
+use rust_nn::tensor::Tensor;
+
+// 1 shared block applied 8 times: deep computation, minimal params.
+let model = LoopedTransformer::new(64, 128, 4, 256, 10, 8);
+//               input  d_model heads  ff   out  loops
+
+let x = Tensor::randn(&[2, 16, 64]);   // [batch, seq, input_dim]
+let y = model.forward(&x);             // [2, 16, 10]
+
+// With adaptive halting (ACT): stop early when confident.
+let model = LoopedTransformer::new(64, 128, 4, 256, 10, 16)
+    .with_adaptive_halting(0.9);
+let (y, loops_used) = model.forward_with_loops(&x); // loops_used <= 16
+```
+
+A standard (non-looped) `Transformer` with independently-parameterized layers is also available
+for comparison.
+
 ### Reasoning: Chain of Thought (CoT) & Tree of Thoughts (ToT)
 
 **Chain of Thought** refines a hidden state by applying a shared "thought" transformation
@@ -394,6 +426,20 @@ cargo test
 
 ## Changelog
 
+### 0.6.0 — Looped Transformer
+
+- **LoopedTransformer**: a weight-shared transformer block applied recurrently for `T` loops,
+  decoupling computational depth from parameter count (Universal Transformer / LoopLM style).
+  Includes multi-head attention (via fused `permute` + FlashAttention), pre-norm LayerNorm,
+  timestep conditioning (sinusoidal embedding), residual connections, and optional adaptive
+  halting (ACT-style input-dependent compute depth). Also includes a standard `Transformer`
+  (non-looped) for comparison.
+- **Core autograd ops**: added `permute` (axis permutation, fully differentiable), `layer_norm`
+  (fused, exact backward for input/gamma/beta), and `LayerNorm` module.
+- Added `tests/looped_transformer.rs` (16 tests: permute correctness + grad check, LayerNorm
+  correctness + grad check, MHA shape/differentiability, looped transformer shape/
+  differentiability/learning/adaptive-halting/param-efficiency).
+
 ### 0.5.0 — Reinforcement Learning
 
 - **RL module** (`src/rl.rs`): a Gym-style `Environment` trait plus four agents — `Reinforce`
@@ -484,7 +530,8 @@ What's done and what's planned:
 
 - [x] **Autograd engine**: reverse-mode automatic differentiation with correct broadcasting.
 - [x] **Core layers & optimizers**: Linear, Dropout, BatchNorm, MoE, RNN; SGD/Adam/RMSprop/Muon.
-- [x] **Attention**: exact, memory-efficient FlashAttention.
+- [x] **Attention**: exact, memory-efficient FlashAttention + multi-head.
+- [x] **Looped Transformer**: weight-shared iterative computation (Universal Transformer style).
 - [x] **State Space Models**: full & hybrid Mamba (selective SSM, linear-time).
 - [x] **Diffusion**: DDPM noise schedule + denoising + sampling.
 - [x] **Reinforcement Learning**: REINFORCE, Actor-Critic, DQN, PPO + environments.

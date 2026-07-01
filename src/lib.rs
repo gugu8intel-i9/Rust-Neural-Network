@@ -47,13 +47,14 @@ pub mod mamba;
 pub mod diffusion;
 pub mod rl;
 pub mod self_improve;
+pub mod looped_transformer;
 
 // Re-export main types for convenient access
 pub use tensor::Tensor;
 pub use activations::{relu, sigmoid, tanh, softmax, gelu};
 pub use nn::{
     Module, Sequential, Linear, ReLU, Sigmoid, Tanh, Softmax, GELU, Flatten, Dropout,
-    BatchNorm1D, NormalMoE, FineGrainedMoE, Recursive, RNNCell, FakeQuantize, CSA, HCA,
+    BatchNorm1D, LayerNorm, NormalMoE, FineGrainedMoE, Recursive, RNNCell, FakeQuantize, CSA, HCA,
     attention, flash_attention,
 };
 pub use reasoning::{SwiReasoning, MarkovianRSA, ChainOfThought, TreeOfThoughts};
@@ -63,6 +64,7 @@ pub use train::{SimpleDataLoader, Trainer};
 pub use quant::{Rotor, RotorQuant};
 pub use mamba::{MambaBlock, Mamba, HybridMamba};
 pub use diffusion::{NoiseSchedule, DenoiseNet, DDPM, ScheduleType, sinusoidal_embedding};
+pub use looped_transformer::{LoopedTransformer, Transformer, TransformerBlock, MultiHeadAttention};
 pub use rl::{
     Environment, Reinforce, ActorCritic, Dqn, Ppo, ReplayBuffer, Transition,
     BanditEnv, ChainEnv, sample_categorical, discounted_returns,

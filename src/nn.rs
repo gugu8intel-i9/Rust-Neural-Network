@@ -230,6 +230,39 @@ impl Module for Dropout {
     }
 }
 
+/// Layer normalization over the last axis (per-position, not per-batch). Standard transformer
+/// normalization: for each position, normalize across features, then apply learnable affine.
+/// Fully differentiable with exact backward for input, gamma, and beta.
+#[derive(Debug, Clone)]
+pub struct LayerNorm {
+    pub gamma: Tensor,
+    pub beta: Tensor,
+    pub eps: f32,
+    pub num_features: usize,
+}
+
+impl LayerNorm {
+    pub fn new(num_features: usize) -> Self {
+        let gamma = Tensor::new(ndarray::ArrayD::ones(ndarray::IxDyn(&[num_features])), true);
+        let beta = Tensor::new(ndarray::ArrayD::zeros(ndarray::IxDyn(&[num_features])), true);
+        LayerNorm { gamma, beta, eps: 1e-5, num_features }
+    }
+
+    pub fn with_eps(mut self, eps: f32) -> Self {
+        self.eps = eps;
+        self
+    }
+}
+
+impl Module for LayerNorm {
+    fn forward(&self, input: &Tensor) -> Tensor {
+        input.layer_norm(&self.gamma, &self.beta, self.eps)
+    }
+    fn parameters(&self) -> Vec<Tensor> {
+        vec![self.gamma.clone(), self.beta.clone()]
+    }
+}
+
 /// 1-D batch normalization over the feature dimension.
 ///
 /// Expects input shaped `[batch, features]`. Statistics (mean/variance) are computed from
