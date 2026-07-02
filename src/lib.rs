@@ -50,6 +50,8 @@ pub mod self_improve;
 pub mod looped_transformer;
 pub mod tokenizer;
 pub mod position;
+pub mod serialize;
+pub mod gpu;
 
 // Re-export main types for convenient access
 pub use tensor::Tensor;
@@ -69,6 +71,8 @@ pub use diffusion::{NoiseSchedule, DenoiseNet, DDPM, ScheduleType, sinusoidal_em
 pub use looped_transformer::{LoopedTransformer, Transformer, TransformerBlock, MultiHeadAttention};
 pub use tokenizer::{BpeTokenizer, MergeScoring};
 pub use position::{RoPE, CARoPE, AlibiBias, SinusoidalPE, LearnedPE, PositionalEncoding};
+pub use serialize::{serialize, deserialize, save_model, load_model, save_model_named, safetensors_export, safetensors_import};
+pub use gpu::{gpu_matmul, gpu_add, gpu_mul, has_gpu, GpuBackend};
 pub use rl::{
     Environment, Reinforce, ActorCritic, Dqn, Ppo, ReplayBuffer, Transition,
     BanditEnv, ChainEnv, sample_categorical, discounted_returns,

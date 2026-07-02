@@ -7,6 +7,7 @@ use ndarray::{ArrayD, IxDyn};
 use ndarray_rand::rand_distr::{Normal, StandardNormal};
 use ndarray_rand::RandomExt;
 use std::sync::{Arc, RwLock};
+use std::collections::{HashMap, HashSet};
 use std::ops::{Add, Mul, Sub};
 
 /// Reduce a gradient array back down to `target_shape`, undoing any broadcasting
@@ -108,6 +109,26 @@ pub enum Op {
     /// `half_dim = dim/2`. Forward applies the GPT-NeoX/Llama rotate-half convention;
     /// backward is exact (transpose of the rotation = negate sin).
     Rope(Tensor, Vec<f32>, Vec<f32>, usize),
+}
+
+
+/// Helper: extract the input tensors from any Op variant (for graph traversal).
+impl Op {
+    fn inputs(&self) -> Vec<&Tensor> {
+        match self {
+            Op::Add(a, b) | Op::Sub(a, b) | Op::Mul(a, b) | Op::MatMul(a, b)
+            | Op::Conv1DCausal(a, b) => vec![a, b],
+            Op::SoftmaxCrossEntropy(a, b) | Op::BCEWithLogits(a, b) | Op::BCE(a, b)
+            | Op::L1(a, b) => vec![a, b],
+            Op::Huber(a, b, _) => vec![a, b],
+            Op::ReLU(a) | Op::Transpose(a) | Op::Softplus(a) | Op::Sigmoid(a) => vec![a],
+            Op::Reshape(a, _) | Op::Sum(a, _) | Op::Permute(a, _) => vec![a],
+            Op::Rope(a, _, _, _) => vec![a],
+            Op::FlashAttention(q, k, v, _) => vec![q, k, v],
+            Op::SelectiveScan(d, b, c, u, a) => vec![d, b, c, u, a],
+            Op::LayerNorm(a, g, b, _) => vec![a, g, b],
+        }
+    }
 }
 
 /// Numerically stable softmax over the last axis of a dynamic array.
@@ -813,264 +834,284 @@ impl Tensor {
 
     // ==================== Autograd ====================
 
+    /// Stable graph-node identifier (Arc pointer address).
+    fn id(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+
+    /// Whether this tensor participates in gradient computation.
+    pub fn requires_grad(&self) -> bool {
+        self.0.read().unwrap().requires_grad
+    }
+
+    /// Iterative topological sort of the computation graph rooted at `self`.
+    /// Returns nodes in reverse-topological order (root first, leaves last) so that when
+    /// we process a node, all gradients flowing into it have already been accumulated.
+    /// Uses an explicit stack (no recursion → no stack overflow on deep graphs).
+    fn topo_sort(&self) -> Vec<Tensor> {
+        let mut visited = HashSet::new();
+        let mut post_order = Vec::new();
+        let mut stack: Vec<(Tensor, bool)> = vec![(self.clone(), false)];
+
+        while let Some((t, expanded)) = stack.pop() {
+            let tid = t.id();
+            if visited.contains(&tid) {
+                continue;
+            }
+            if expanded {
+                visited.insert(tid);
+                post_order.push(t);
+            } else {
+                stack.push((t.clone(), true));
+                let children: Vec<Tensor> = {
+                    let inner = t.0.read().unwrap();
+                    match &inner.creator {
+                        Some(op) => op.inputs().into_iter().cloned().collect(),
+                        None => Vec::new(),
+                    }
+                };
+                for child in children {
+                    stack.push((child, false));
+                }
+            }
+        }
+        post_order.reverse();
+        post_order
+    }
+
+    /// Reverse-mode automatic differentiation.
+    ///
+    /// Uses an **iterative topological-sort backward** (not recursive): the graph is topo-sorted
+    /// once, then processed node-by-node with a gradient accumulation map. This eliminates the
+    /// stack-overflow failures that plague recursive backward on deep computation graphs
+    /// (e.g. unrolled looped transformers, long training loops). The gradient math is identical.
     pub fn backward(&self) {
-        let shape = self.shape();
-        let grad = ArrayD::ones(IxDyn(&shape));
+        let grad = ArrayD::ones(IxDyn(&self.shape()));
         self.backward_with_grad(grad);
     }
 
-    pub fn backward_with_grad(&self, grad: ArrayD<f32>) {
-        {
-            let mut inner = self.0.write().unwrap();
-            if let Some(ref mut existing_grad) = inner.grad {
-                *existing_grad += &grad;
-            } else {
-                inner.grad = Some(grad.clone());
-            }
-        }
+    /// Run backward starting from a custom seed gradient (same iterative engine).
+    pub fn backward_with_grad(&self, root_grad: ArrayD<f32>) {
+        let topo = self.topo_sort();
+        let mut grad_map: HashMap<usize, ArrayD<f32>> = HashMap::new();
+        grad_map.insert(self.id(), root_grad);
 
-        let inner = self.0.read().unwrap();
-        if let Some(ref op) = inner.creator {
+        for node in &topo {
+            let nid = node.id();
+            let Some(grad) = grad_map.remove(&nid) else { continue };
+
+            // Store the accumulated gradient into the node.
+            {
+                let mut inner = node.0.write().unwrap();
+                if let Some(ref mut g) = inner.grad {
+                    *g += &grad;
+                } else {
+                    inner.grad = Some(grad.clone());
+                }
+            }
+
+            // Read the creator op (clone the Arc to release the read lock before matching).
+            let creator = node.0.read().unwrap().creator.clone();
+            let Some(op) = creator else { continue };
+
+            // Helper closure to accumulate a gradient into the map for a given tensor.
+            let acc = |map: &mut HashMap<usize, ArrayD<f32>>, t: &Tensor, g: ArrayD<f32>| {
+                match map.get_mut(&t.id()) {
+                    Some(e) => *e += &g,
+                    None => {
+                        map.insert(t.id(), g);
+                    }
+                }
+            };
+
             match op.as_ref() {
                 Op::Add(a, b) => {
-                    if a.0.read().unwrap().requires_grad {
+                    if a.requires_grad() {
                         let a_shape = a.shape();
-                        a.backward_with_grad(unbroadcast(grad.clone(), &a_shape));
+                        acc(&mut grad_map, a, unbroadcast(grad.clone(), &a_shape));
                     }
-                    if b.0.read().unwrap().requires_grad {
+                    if b.requires_grad() {
                         let b_shape = b.shape();
-                        b.backward_with_grad(unbroadcast(grad, &b_shape));
+                        acc(&mut grad_map, b, unbroadcast(grad.clone(), &b_shape));
                     }
                 }
                 Op::Sub(a, b) => {
-                    if a.0.read().unwrap().requires_grad {
+                    if a.requires_grad() {
                         let a_shape = a.shape();
-                        a.backward_with_grad(unbroadcast(grad.clone(), &a_shape));
+                        acc(&mut grad_map, a, unbroadcast(grad.clone(), &a_shape));
                     }
-                    if b.0.read().unwrap().requires_grad {
+                    if b.requires_grad() {
                         let b_shape = b.shape();
-                        b.backward_with_grad(unbroadcast(-grad, &b_shape));
+                        acc(&mut grad_map, b, unbroadcast(-grad.clone(), &b_shape));
                     }
                 }
                 Op::Mul(a, b) => {
-                    if a.0.read().unwrap().requires_grad {
+                    if a.requires_grad() {
                         let b_data = b.0.read().unwrap().data.clone();
                         let a_shape = a.shape();
-                        a.backward_with_grad(unbroadcast(&grad * &b_data, &a_shape));
+                        acc(&mut grad_map, a, unbroadcast(&grad * &b_data, &a_shape));
                     }
-                    if b.0.read().unwrap().requires_grad {
+                    if b.requires_grad() {
                         let a_data = a.0.read().unwrap().data.clone();
                         let b_shape = b.shape();
-                        b.backward_with_grad(unbroadcast(&grad * &a_data, &b_shape));
+                        acc(&mut grad_map, b, unbroadcast(&grad * &a_data, &b_shape));
                     }
                 }
                 Op::MatMul(a, b) => {
                     let a_data = a.0.read().unwrap().data.clone().into_dimensionality::<ndarray::Ix2>().unwrap();
                     let b_data = b.0.read().unwrap().data.clone().into_dimensionality::<ndarray::Ix2>().unwrap();
-                    let grad_2d = grad.into_dimensionality::<ndarray::Ix2>().unwrap();
-
-                    if a.0.read().unwrap().requires_grad {
+                    let grad_2d = grad.clone().into_dimensionality::<ndarray::Ix2>().unwrap();
+                    if a.requires_grad() {
                         let da = grad_2d.dot(&b_data.t()).into_dyn();
-                        a.backward_with_grad(da);
+                        acc(&mut grad_map, a, da);
                     }
-                    if b.0.read().unwrap().requires_grad {
+                    if b.requires_grad() {
                         let db = a_data.t().dot(&grad_2d).into_dyn();
-                        b.backward_with_grad(db);
+                        acc(&mut grad_map, b, db);
                     }
                 }
                 Op::ReLU(a) => {
-                    if a.0.read().unwrap().requires_grad {
+                    if a.requires_grad() {
                         let a_data = a.0.read().unwrap().data.clone();
-                        let mut mask = a_data.mapv(|x| if x > 0.0 { 1.0 } else { 0.0 });
-                        mask *= &grad;
-                        a.backward_with_grad(mask);
+                        let mask = a_data.mapv(|x| if x > 0.0 { 1.0 } else { 0.0 });
+                        acc(&mut grad_map, a, &grad * &mask);
                     }
                 }
                 Op::Reshape(a, original_shape) => {
-                    if a.0.read().unwrap().requires_grad {
-                        a.backward_with_grad(grad.into_shape(IxDyn(original_shape)).unwrap());
+                    if a.requires_grad() {
+                        acc(&mut grad_map, a, grad.clone().into_shape(IxDyn(original_shape)).unwrap());
                     }
                 }
                 Op::Transpose(a) => {
-                    if a.0.read().unwrap().requires_grad {
-                        a.backward_with_grad(grad.reversed_axes());
+                    if a.requires_grad() {
+                        acc(&mut grad_map, a, grad.clone().reversed_axes());
                     }
                 }
                 Op::Sum(a, _) => {
-                    if a.0.read().unwrap().requires_grad {
+                    if a.requires_grad() {
                         let a_shape = a.shape();
                         let a_grad = ArrayD::from_elem(IxDyn(&a_shape), *grad.first().unwrap_or(&0.0));
-                        a.backward_with_grad(a_grad);
+                        acc(&mut grad_map, a, a_grad);
                     }
                 }
                 Op::SoftmaxCrossEntropy(logits, target) => {
-                    if logits.0.read().unwrap().requires_grad {
+                    if logits.requires_grad() {
                         let l = logits.0.read().unwrap().data.clone();
                         let t = target.0.read().unwrap().data.clone();
                         let batch = l.shape()[0] as f32;
                         let probs = stable_softmax(&l);
-                        // d loss / d logits = (softmax(logits) - target) / batch,
-                        // scaled by the incoming scalar gradient.
                         let scale = grad.first().copied().unwrap_or(1.0) / batch;
                         let dlogits = (&probs - &t).mapv(|x| x * scale);
-                        logits.backward_with_grad(dlogits);
+                        acc(&mut grad_map, logits, dlogits);
                     }
                 }
                 Op::BCEWithLogits(logits, target) => {
-                    if logits.0.read().unwrap().requires_grad {
+                    if logits.requires_grad() {
                         let l = logits.0.read().unwrap().data.clone();
                         let t = target.0.read().unwrap().data.clone();
                         let n = l.len() as f32;
                         let sig = Tensor::sigmoid_data(&l);
                         let scale = grad.first().copied().unwrap_or(1.0) / n;
                         let dlogits = (&sig - &t).mapv(|x| x * scale);
-                        logits.backward_with_grad(dlogits);
+                        acc(&mut grad_map, logits, dlogits);
                     }
                 }
-                Op::BCE(probs, target) => {
-                    if probs.0.read().unwrap().requires_grad {
-                        let p = probs.0.read().unwrap().data.clone();
+                Op::BCE(probs_t, target) => {
+                    if probs_t.requires_grad() {
+                        let p = probs_t.0.read().unwrap().data.clone();
                         let t = target.0.read().unwrap().data.clone();
                         let n = p.len() as f32;
                         let scale = grad.first().copied().unwrap_or(1.0) / n;
-                        // d/dp -[z ln p + (1-z) ln(1-p)] = (p - z) / (p (1-p))
-                        let dp = p
-                            .iter()
-                            .zip(t.iter())
-                            .map(|(&pp, &z)| {
-                                let pp = pp.clamp(1e-12, 1.0 - 1e-12);
-                                (pp - z) / (pp * (1.0 - pp))
-                            })
-                            .collect::<Vec<_>>();
-                        let mut grad_arr =
-                            ArrayD::from_shape_vec(IxDyn(p.shape()), dp).expect("bce grad shape");
-                        grad_arr.mapv_inplace(|x| x * scale);
-                        probs.backward_with_grad(grad_arr);
+                        let dp = p.iter().zip(t.iter()).map(|(&pp, &z)| {
+                            let pp = pp.clamp(1e-12, 1.0 - 1e-12);
+                            (pp - z) / (pp * (1.0 - pp))
+                        }).collect::<Vec<_>>();
+                        let mut ga = ArrayD::from_shape_vec(IxDyn(p.shape()), dp).unwrap();
+                        ga.mapv_inplace(|x| x * scale);
+                        acc(&mut grad_map, probs_t, ga);
                     }
                 }
                 Op::L1(pred, target) => {
-                    if pred.0.read().unwrap().requires_grad {
+                    if pred.requires_grad() {
                         let p = pred.0.read().unwrap().data.clone();
                         let t = target.0.read().unwrap().data.clone();
                         let n = p.len() as f32;
                         let scale = grad.first().copied().unwrap_or(1.0) / n;
-                        let dp = p
-                            .iter()
-                            .zip(t.iter())
+                        let dp = p.iter().zip(t.iter())
                             .map(|(&a, &b)| if a > b { 1.0 } else if a < b { -1.0 } else { 0.0 })
                             .collect::<Vec<_>>();
-                        let mut grad_arr =
-                            ArrayD::from_shape_vec(IxDyn(p.shape()), dp).expect("l1 grad shape");
-                        grad_arr.mapv_inplace(|x| x * scale);
-                        pred.backward_with_grad(grad_arr);
+                        let mut ga = ArrayD::from_shape_vec(IxDyn(p.shape()), dp).unwrap();
+                        ga.mapv_inplace(|x| x * scale);
+                        acc(&mut grad_map, pred, ga);
                     }
                 }
                 Op::Huber(pred, target, delta) => {
-                    if pred.0.read().unwrap().requires_grad {
+                    if pred.requires_grad() {
                         let p = pred.0.read().unwrap().data.clone();
                         let t = target.0.read().unwrap().data.clone();
                         let n = p.len() as f32;
                         let scale = grad.first().copied().unwrap_or(1.0) / n;
-                        // d/dp huber = clip((pred - target)/delta, -1, 1) (for the standard form),
-                        // which equals: err if |err|<=delta else delta*sign(err).
-                        let dp = p
-                            .iter()
-                            .zip(t.iter())
-                            .map(|(&a, &b)| {
-                                let d = a - b;
-                                let ad = d.abs();
-                                if ad <= *delta { d } else { *delta * d.signum() }
-                            })
-                            .collect::<Vec<_>>();
-                        let mut grad_arr =
-                            ArrayD::from_shape_vec(IxDyn(p.shape()), dp).expect("huber grad shape");
-                        grad_arr.mapv_inplace(|x| x * scale);
-                        pred.backward_with_grad(grad_arr);
+                        let dp = p.iter().zip(t.iter()).map(|(&a, &b)| {
+                            let d = a - b; let ad = d.abs();
+                            if ad <= *delta { d } else { *delta * d.signum() }
+                        }).collect::<Vec<_>>();
+                        let mut ga = ArrayD::from_shape_vec(IxDyn(p.shape()), dp).unwrap();
+                        ga.mapv_inplace(|x| x * scale);
+                        acc(&mut grad_map, pred, ga);
                     }
                 }
                 Op::FlashAttention(q, k, v, scale) => {
-                    // Recompute attention on-chip (the FlashAttention backward strategy) and
-                    // apply the standard attention gradient formulas.
                     let incoming = grad.first().copied().unwrap_or(1.0);
                     let qd = q.0.read().unwrap().data.clone();
                     let kd = k.0.read().unwrap().data.clone();
                     let vd = v.0.read().unwrap().data.clone();
                     let shape = qd.shape();
                     let (batch, seq, dim) = (shape[0], shape[1], shape[2]);
-
-                    let q_rg = q.0.read().unwrap().requires_grad;
-                    let k_rg = k.0.read().unwrap().requires_grad;
-                    let v_rg = v.0.read().unwrap().requires_grad;
-
+                    let q_rg = q.requires_grad();
+                    let k_rg = k.requires_grad();
+                    let v_rg = v.requires_grad();
                     let mut dq = if q_rg { Some(ArrayD::zeros(IxDyn(shape))) } else { None };
                     let mut dk = if k_rg { Some(ArrayD::zeros(IxDyn(shape))) } else { None };
                     let mut dv = if v_rg { Some(ArrayD::zeros(IxDyn(shape))) } else { None };
-
                     for b in 0..batch {
-                        // Recompute the softmax probability matrix P[b] = softmax(scale * Q K^T).
                         let mut p_row = vec![0.0f32; seq];
                         for i in 0..seq {
-                            let mut s = vec![0.0f32; seq];
+                            let mut sv = vec![0.0f32; seq];
                             let mut m = f32::NEG_INFINITY;
                             for j in 0..seq {
                                 let mut dot = 0.0f32;
-                                for t in 0..dim {
-                                    dot += qd[[b, i, t]] * kd[[b, j, t]];
-                                }
-                                s[j] = dot * *scale;
-                                m = m.max(s[j]);
+                                for t in 0..dim { dot += qd[[b, i, t]] * kd[[b, j, t]]; }
+                                sv[j] = dot * *scale;
+                                m = m.max(sv[j]);
                             }
                             let mut z = 0.0f32;
-                            for (pj, sj) in p_row.iter_mut().zip(s.iter()) {
-                                *pj = (sj - m).exp();
-                                z += *pj;
-                            }
+                            for (pj, sj) in p_row.iter_mut().zip(sv.iter()) { *pj = (sj - m).exp(); z += *pj; }
                             let inv = if z > 0.0 { 1.0 / z } else { 0.0 };
-                            for pj in p_row.iter_mut() {
-                                *pj *= inv;
-                            }
-
-                            // dattn_ij = sum_t dout[i,t] * V[j,t]   (dout = incoming gradient)
+                            for pj in p_row.iter_mut() { *pj *= inv; }
                             let mut dp = vec![0.0f32; seq];
                             for j in 0..seq {
-                                let mut acc = 0.0f32;
-                                for t in 0..dim {
-                                    acc += incoming * vd[[b, j, t]];
-                                }
-                                dp[j] = acc;
+                                let mut acc2 = 0.0f32;
+                                for t in 0..dim { acc2 += incoming * vd[[b, j, t]]; }
+                                dp[j] = acc2;
                             }
-                            // softmax backward: dP_ij = P_ij * (dp_ij - sum_k P_ik dp_ik)
                             let mut dotp = 0.0f32;
-                            for (pj, dpj) in p_row.iter().zip(dp.iter()) {
-                                dotp += pj * dpj;
-                            }
-                            for j in 0..seq {
-                                dp[j] = p_row[j] * (dp[j] - dotp);
-                            }
-                            // Now dp = d(scores_ij). Accumulate parameter gradients.
+                            for (pj, dpj) in p_row.iter().zip(dp.iter()) { dotp += pj * dpj; }
+                            for j in 0..seq { dp[j] = p_row[j] * (dp[j] - dotp); }
                             for j in 0..seq {
                                 for t in 0..dim {
-                                    if let Some(ref mut g) = dv {
-                                        g[[b, j, t]] += p_row[j] * incoming;
-                                    }
-                                    if let Some(ref mut gq) = dq {
-                                        gq[[b, i, t]] += dp[j] * *scale * kd[[b, j, t]];
-                                    }
-                                    if let Some(ref mut gk) = dk {
-                                        gk[[b, j, t]] += dp[j] * *scale * qd[[b, i, t]];
-                                    }
+                                    if let Some(ref mut g) = dv { g[[b, j, t]] += p_row[j] * incoming; }
+                                    if let Some(ref mut gq) = dq { gq[[b, i, t]] += dp[j] * *scale * kd[[b, j, t]]; }
+                                    if let Some(ref mut gk) = dk { gk[[b, j, t]] += dp[j] * *scale * qd[[b, i, t]]; }
                                 }
                             }
                         }
                     }
-
-                    if let Some(g) = dq { q.backward_with_grad(g); }
-                    if let Some(g) = dk { k.backward_with_grad(g); }
-                    if let Some(g) = dv { v.backward_with_grad(g); }
+                    if let Some(g) = dq { acc(&mut grad_map, q, g); }
+                    if let Some(g) = dk { acc(&mut grad_map, k, g); }
+                    if let Some(g) = dv { acc(&mut grad_map, v, g); }
                 }
                 Op::SelectiveScan(delta, b_vec, c_vec, u, a) => {
-                    // Reverse scan. dy is the incoming gradient on y [batch, seq, d].
-                    let dy = grad;
+                    let dy = &grad;
                     let dd = delta.0.read().unwrap().data.clone();
                     let bd = b_vec.0.read().unwrap().data.clone();
                     let cd = c_vec.0.read().unwrap().data.clone();
@@ -1079,90 +1120,54 @@ impl Tensor {
                     let dshape = dd.shape();
                     let (batch, seq, dim) = (dshape[0], dshape[1], dshape[2]);
                     let n = bd.shape()[bd.shape().len() - 1];
-
-                    let d_rg = delta.0.read().unwrap().requires_grad;
-                    let b_rg = b_vec.0.read().unwrap().requires_grad;
-                    let c_rg = c_vec.0.read().unwrap().requires_grad;
-                    let u_rg = u.0.read().unwrap().requires_grad;
-                    let a_rg = a.0.read().unwrap().requires_grad;
-
+                    let d_rg = delta.requires_grad(); let b_rg = b_vec.requires_grad();
+                    let c_rg = c_vec.requires_grad(); let u_rg = u.requires_grad(); let a_rg = a.requires_grad();
                     let mut g_delta = if d_rg { Some(ArrayD::zeros(IxDyn(&[batch, seq, dim]))) } else { None };
                     let mut g_b = if b_rg { Some(ArrayD::zeros(IxDyn(&[batch, seq, n]))) } else { None };
                     let mut g_c = if c_rg { Some(ArrayD::zeros(IxDyn(&[batch, seq, n]))) } else { None };
                     let mut g_u = if u_rg { Some(ArrayD::zeros(IxDyn(&[batch, seq, dim]))) } else { None };
                     let mut g_a = if a_rg { Some(ArrayD::zeros(IxDyn(&[dim, n]))) } else { None };
-
                     for b in 0..batch {
-                        // Forward-recompute, storing the state after every step (recomputation strategy).
                         let mut h = vec![0.0f32; dim * n];
                         let mut states: Vec<Vec<f32>> = Vec::with_capacity(seq + 1);
-                        states.push(h.clone()); // states[0] = h_{-1} (initial, zeros)
+                        states.push(h.clone());
                         for t in 0..seq {
                             for d in 0..dim {
-                                let dt = dd[[b, t, d]];
-                                let ut = ud[[b, t, d]];
+                                let dt = dd[[b, t, d]]; let ut = ud[[b, t, d]];
                                 for j in 0..n {
-                                    let abar = (dt * ad[[d, j]]).exp();
-                                    let bbar = dt * bd[[b, t, j]];
+                                    let abar = (dt * ad[[d, j]]).exp(); let bbar = dt * bd[[b, t, j]];
                                     h[d * n + j] = abar * h[d * n + j] + bbar * ut;
                                 }
                             }
-                            states.push(h.clone()); // states[t+1] = h_t
+                            states.push(h.clone());
                         }
-
-                        // Reverse scan: g[d*n+j] = gradient w.r.t. h_t[d,j].
                         let mut g = vec![0.0f32; dim * n];
                         for t in (0..seq).rev() {
-                            let h_prev = &states[t];     // h_{t-1}
-                            let h_cur = &states[t + 1];   // h_t
+                            let h_prev = &states[t]; let h_cur = &states[t + 1];
                             for d in 0..dim {
-                                let dt = dd[[b, t, d]];
-                                let ut = ud[[b, t, d]];
+                                let dt = dd[[b, t, d]]; let ut = ud[[b, t, d]];
                                 let dyt = dy[[b, t, d]];
-                                // grad from y_t: dy_t * C_t  → adds into gh
+                                for j in 0..n { g[d * n + j] += dyt * cd[[b, t, j]]; }
                                 for j in 0..n {
-                                    g[d * n + j] += dyt * cd[[b, t, j]];
-                                }
-                                for j in 0..n {
-                                    let abar = (dt * ad[[d, j]]).exp();
-                                    let bbar = dt * bd[[b, t, j]];
-                                    let gt = g[d * n + j];           // total grad on h_t[d,j]
-                                    let hp = h_prev[d * n + j];      // h_{t-1}[d,j]
-                                    let hc = h_cur[d * n + j];       // h_t[d,j]
-                                    // grad w.r.t C_t[j]: dy_t * h_t[d,j]
-                                    if let Some(ref mut gc) = g_c {
-                                        gc[[b, t, j]] += dyt * hc;
-                                    }
-                                    // grad w.r.t u_t[d]: sum_j gh * B̄_t
-                                    if let Some(ref mut gu) = g_u {
-                                        gu[[b, t, d]] += gt * bbar;
-                                    }
-                                    // grad w.r.t B_t[j]: gh * u_t * delta
-                                    if let Some(ref mut gb) = g_b {
-                                        gb[[b, t, j]] += gt * ut * dt;
-                                    }
-                                    // grad w.r.t delta_t[d]: Ā-term + B̄-term
+                                    let abar = (dt * ad[[d, j]]).exp(); let bbar = dt * bd[[b, t, j]];
+                                    let gt = g[d * n + j]; let hp = h_prev[d * n + j]; let hc = h_cur[d * n + j];
+                                    if let Some(ref mut gc) = g_c { gc[[b, t, j]] += dyt * hc; }
+                                    if let Some(ref mut gu) = g_u { gu[[b, t, d]] += gt * bbar; }
+                                    if let Some(ref mut gb) = g_b { gb[[b, t, j]] += gt * ut * dt; }
                                     if let Some(ref mut gd) = g_delta {
-                                        let from_a = gt * hp * abar * ad[[d, j]];
-                                        let from_b = gt * ut * bd[[b, t, j]];
-                                        gd[[b, t, d]] += from_a + from_b;
+                                        gd[[b, t, d]] += gt * hp * abar * ad[[d, j]] + gt * ut * bd[[b, t, j]];
                                     }
-                                    // grad w.r.t a[d,j]: gh * h_{t-1} * Ā * delta
-                                    if let Some(ref mut ga) = g_a {
-                                        ga[[d, j]] += gt * hp * abar * dt;
-                                    }
-                                    // propagate to h_{t-1}: gh * Ā
+                                    if let Some(ref mut ga) = g_a { ga[[d, j]] += gt * hp * abar * dt; }
                                     g[d * n + j] = gt * abar;
                                 }
                             }
                         }
                     }
-
-                    if let Some(g) = g_delta { delta.backward_with_grad(g); }
-                    if let Some(g) = g_b { b_vec.backward_with_grad(g); }
-                    if let Some(g) = g_c { c_vec.backward_with_grad(g); }
-                    if let Some(g) = g_u { u.backward_with_grad(g); }
-                    if let Some(g) = g_a { a.backward_with_grad(g); }
+                    if let Some(g) = g_delta { acc(&mut grad_map, delta, g); }
+                    if let Some(g) = g_b { acc(&mut grad_map, b_vec, g); }
+                    if let Some(g) = g_c { acc(&mut grad_map, c_vec, g); }
+                    if let Some(g) = g_u { acc(&mut grad_map, u, g); }
+                    if let Some(g) = g_a { acc(&mut grad_map, a, g); }
                 }
                 Op::Conv1DCausal(input, weight) => {
                     let id = input.0.read().unwrap().data.clone();
@@ -1170,68 +1175,53 @@ impl Tensor {
                     let ishape = id.shape();
                     let (batch, seq, channels) = (ishape[0], ishape[1], ishape[2]);
                     let kernel = wd.shape()[1];
-
-                    let i_rg = input.0.read().unwrap().requires_grad;
-                    let w_rg = weight.0.read().unwrap().requires_grad;
-
+                    let i_rg = input.requires_grad(); let w_rg = weight.requires_grad();
                     let mut g_in = if i_rg { Some(ArrayD::zeros(IxDyn(ishape))) } else { None };
                     let mut g_w = if w_rg { Some(ArrayD::zeros(IxDyn(wd.shape()))) } else { None };
-
                     for b in 0..batch {
                         for t in 0..seq {
                             for c in 0..channels {
                                 let gout = grad[[b, t, c]];
                                 for i in 0..kernel {
-                                    let s = t as isize - kernel as isize + 1 + i as isize;
-                                    if s >= 0 {
-                                        let su = s as usize;
-                                        if let Some(ref mut gi) = g_in {
-                                            gi[[b, su, c]] += gout * wd[[c, i]];
-                                        }
-                                        if let Some(ref mut gw) = g_w {
-                                            gw[[c, i]] += gout * id[[b, su, c]];
-                                        }
+                                    let si = t as isize - kernel as isize + 1 + i as isize;
+                                    if si >= 0 {
+                                        let su = si as usize;
+                                        if let Some(ref mut gi) = g_in { gi[[b, su, c]] += gout * wd[[c, i]]; }
+                                        if let Some(ref mut gw) = g_w { gw[[c, i]] += gout * id[[b, su, c]]; }
                                     }
                                 }
                             }
                         }
                     }
-
-                    if let Some(g) = g_in { input.backward_with_grad(g); }
-                    if let Some(g) = g_w { weight.backward_with_grad(g); }
+                    if let Some(g) = g_in { acc(&mut grad_map, input, g); }
+                    if let Some(g) = g_w { acc(&mut grad_map, weight, g); }
                 }
                 Op::Softplus(x) => {
-                    if x.0.read().unwrap().requires_grad {
-                        // d/dx softplus = sigmoid(x)
+                    if x.requires_grad() {
                         let xd = x.0.read().unwrap().data.clone();
                         let sig = xd.mapv(|v| {
                             if v >= 0.0 { 1.0 / (1.0 + (-v).exp()) } else { let e = v.exp(); e / (1.0 + e) }
                         });
-                        x.backward_with_grad(&grad * &sig);
+                        acc(&mut grad_map, x, &grad * &sig);
                     }
                 }
                 Op::Sigmoid(x) => {
-                    if x.0.read().unwrap().requires_grad {
+                    if x.requires_grad() {
                         let xd = x.0.read().unwrap().data.clone();
                         let sig = xd.mapv(|v| {
                             if v >= 0.0 { 1.0 / (1.0 + (-v).exp()) } else { let e = v.exp(); e / (1.0 + e) }
                         });
-                        x.backward_with_grad(&grad * &sig * &(1.0 - &sig));
+                        acc(&mut grad_map, x, &grad * &sig * &(1.0 - &sig));
                     }
                 }
                 Op::Permute(input, axes) => {
-                    if input.0.read().unwrap().requires_grad {
-                        // Inverse permutation.
+                    if input.requires_grad() {
                         let mut inv = vec![0usize; axes.len()];
-                        for (i, &a) in axes.iter().enumerate() {
-                            inv[a] = i;
-                        }
-                        // Materialize contiguous so downstream reshapes work.
-                        let permuted = grad.permuted_axes(IxDyn(&inv));
+                        for (i, &a) in axes.iter().enumerate() { inv[a] = i; }
+                        let permuted = grad.clone().permuted_axes(IxDyn(&inv));
                         let flat: Vec<f32> = permuted.iter().copied().collect();
-                        let contig =
-                            ArrayD::from_shape_vec(IxDyn(permuted.shape()), flat).unwrap();
-                        input.backward_with_grad(contig);
+                        let contig = ArrayD::from_shape_vec(IxDyn(permuted.shape()), flat).unwrap();
+                        acc(&mut grad_map, input, contig);
                     }
                 }
                 Op::LayerNorm(input, gamma, beta, _eps) => {
@@ -1243,69 +1233,49 @@ impl Tensor {
                     let nrows = shape / n;
                     let eps = *_eps;
                     let grad_flat: Vec<f32> = grad.iter().copied().collect();
-
-                    // Recompute x_hat per row.
                     let mut x_hat = vec![0.0f32; shape];
                     let mut inv_stds = vec![0.0f32; nrows];
                     #[allow(clippy::needless_range_loop)]
                     for row in 0..nrows {
                         let base = row * n;
                         let mut mean = 0.0f32;
-                        for j in 0..n {
-                            mean += data[base + j];
-                        }
+                        for j in 0..n { mean += data[base + j]; }
                         mean /= n as f32;
                         let mut var = 0.0f32;
-                        for j in 0..n {
-                            let d = data[base + j] - mean;
-                            var += d * d;
-                        }
+                        for j in 0..n { let d = data[base + j] - mean; var += d * d; }
                         var /= n as f32;
                         let inv_std = 1.0 / (var + eps).sqrt();
                         inv_stds[row] = inv_std;
-                        for j in 0..n {
-                            x_hat[base + j] = (data[base + j] - mean) * inv_std;
-                        }
+                        for j in 0..n { x_hat[base + j] = (data[base + j] - mean) * inv_std; }
                     }
-
-                    let in_rg = input.0.read().unwrap().requires_grad;
-                    let g_rg = gamma.0.read().unwrap().requires_grad;
-                    let b_rg = beta.0.read().unwrap().requires_grad;
-
+                    let in_rg = input.requires_grad();
+                    let g_rg = gamma.requires_grad();
+                    let b_rg = beta.requires_grad();
                     if g_rg {
                         let mut dgamma = vec![0.0f32; n];
+                        #[allow(clippy::needless_range_loop)]
                         for row in 0..nrows {
                             let base = row * n;
-                            for j in 0..n {
-                                dgamma[j] += grad_flat[base + j] * x_hat[base + j];
-                            }
+                            for j in 0..n { dgamma[j] += grad_flat[base + j] * x_hat[base + j]; }
                         }
-                        gamma.backward_with_grad(
-                            ArrayD::from_shape_vec(IxDyn(&[n]), dgamma).unwrap(),
-                        );
+                        acc(&mut grad_map, gamma, ArrayD::from_shape_vec(IxDyn(&[n]), dgamma).unwrap());
                     }
                     if b_rg {
                         let mut dbeta = vec![0.0f32; n];
+                        #[allow(clippy::needless_range_loop)]
                         for row in 0..nrows {
                             let base = row * n;
-                            for j in 0..n {
-                                dbeta[j] += grad_flat[base + j];
-                            }
+                            for j in 0..n { dbeta[j] += grad_flat[base + j]; }
                         }
-                        beta.backward_with_grad(
-                            ArrayD::from_shape_vec(IxDyn(&[n]), dbeta).unwrap(),
-                        );
+                        acc(&mut grad_map, beta, ArrayD::from_shape_vec(IxDyn(&[n]), dbeta).unwrap());
                     }
                     if in_rg {
-                        // dx_hat = dy * gamma
                         let mut dx_hat = vec![0.0f32; shape];
+                        #[allow(clippy::needless_range_loop)]
                         for row in 0..nrows {
                             let base = row * n;
-                            for j in 0..n {
-                                dx_hat[base + j] = grad_flat[base + j] * gd[j];
-                            }
+                            for j in 0..n { dx_hat[base + j] = grad_flat[base + j] * gd[j]; }
                         }
-                        // dx = inv_std/N * (N*dx_hat - sum(dx_hat) - x_hat*sum(dx_hat*x_hat))
                         let mut dx = vec![0.0f32; shape];
                         #[allow(clippy::needless_range_loop)]
                         for row in 0..nrows {
@@ -1319,29 +1289,19 @@ impl Tensor {
                             let inv = inv_stds[row] / n as f32;
                             for j in 0..n {
                                 dx[base + j] = inv
-                                    * (n as f32 * dx_hat[base + j]
-                                        - sum_dxh
-                                        - x_hat[base + j] * sum_dxh_xh);
+                                    * (n as f32 * dx_hat[base + j] - sum_dxh - x_hat[base + j] * sum_dxh_xh);
                             }
                         }
-                        input.backward_with_grad(
-                            ArrayD::from_shape_vec(IxDyn(&data_shape), dx).unwrap(),
-                        );
+                        acc(&mut grad_map, input, ArrayD::from_shape_vec(IxDyn(&data_shape), dx).unwrap());
                     }
                 }
                 Op::Rope(x, cos, sin, half_dim) => {
-                    if x.0.read().unwrap().requires_grad {
-                        // Backward: transpose of rotation R(θ) = R(−θ).
-                        // grad_x = grad_out * cos − rotate_half(grad_out) * sin
-                        // which is apply_rope with negated sin.
-                        let neg_sin: Vec<f32> = sin.iter().map(|&s| -s).collect();
+                    if x.requires_grad() {
+                        let neg_sin: Vec<f32> = sin.iter().map(|&sv| -sv).collect();
                         let dx = Tensor::apply_rope(
-                            &Tensor::new(grad.clone(), false),
-                            cos,
-                            &neg_sin,
-                            *half_dim,
+                            &Tensor::new(grad.clone(), false), cos, &neg_sin, *half_dim,
                         );
-                        x.backward_with_grad(dx.data());
+                        acc(&mut grad_map, x, dx.data());
                     }
                 }
             }

@@ -477,6 +477,21 @@ cargo test
 
 ## Changelog
 
+### 0.9.0 — Iterative autograd, GPU acceleration, model serialization
+
+- **Iterative topological-sort backward**: replaced the recursive `backward()` with a
+  non-recursive iterative engine that topo-sorts the computation graph once, then processes
+  nodes with a gradient accumulation map. Eliminates stack-overflow failures on deep graphs
+  (looped transformers, long training loops) and is measurably faster. Same exact gradients.
+- **GPU acceleration** (`src/gpu.rs`): WGSL compute shaders for GEMM (matrix multiply) and
+  element-wise add/mul via WebGPU (wgpu). Cross-platform (Vulkan/Metal/DX12). Automatic CPU
+  fallback when no GPU adapter is available. Lazy initialization via `OnceLock`.
+- **Model serialization** (`src/serialize.rs`): compact `rnnb` binary format for tensors and
+  full models, plus **safetensors** export/import for HuggingFace/PyTorch ecosystem interop.
+  Includes a dependency-free JSON parser for the safetensors header.
+- All 115 tests pass (including GPU matmul correctness, serialization round-trips, safetensors
+  interop, and the full existing gradient-check suite with the new iterative engine).
+
 ### 0.8.0 — Positional Encodings (RoPE / YaRN / ALiBi / CARoPE)
 
 - **RoPE**: fused exact-gradient Rotary Position Embedding (the dominant positional encoding in
@@ -611,6 +626,9 @@ This release makes the crate **actually compile and train**. Notable fixes:
 What's done and what's planned:
 
 - [x] **Autograd engine**: reverse-mode automatic differentiation with correct broadcasting.
+- [x] **Iterative autograd**: non-recursive topological-sort backward (no stack overflow).
+- [x] **GPU acceleration**: WebGPU compute shaders (wgpu) with CPU fallback.
+- [x] **Model serialization**: binary format + safetensors interop.
 - [x] **Core layers & optimizers**: Linear, Dropout, BatchNorm, MoE, RNN; SGD/Adam/RMSprop/Muon.
 - [x] **Attention**: exact, memory-efficient FlashAttention + multi-head, with RoPE.
 - [x] **Positional Encodings**: RoPE, YaRN, ALiBi, CARoPE, sinusoidal, learned.
