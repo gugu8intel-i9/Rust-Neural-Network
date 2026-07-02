@@ -480,12 +480,14 @@ mod tests {
         let loaded = safetensors_import(&bytes).unwrap();
 
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].0, "layer1.weight");
-        assert_eq!(loaded[0].1.shape(), vec![2, 2]);
-        let d: Vec<f32> = loaded[0].1.data().iter().copied().collect();
-        assert_eq!(d, vec![1.0, 2.0, 3.0, 4.0]);
-        assert_eq!(loaded[1].0, "layer2.weight");
-        let d2: Vec<f32> = loaded[1].1.data().iter().copied().collect();
+        // HashMap order is non-deterministic; look up by name.
+        let l1 = loaded.iter().find(|(n, _)| n == "layer1.weight").unwrap();
+        let l2 = loaded.iter().find(|(n, _)| n == "layer2.weight").unwrap();
+        assert_eq!(l1.1.shape(), vec![2, 2]);
+        let d1: Vec<f32> = l1.1.data().iter().copied().collect();
+        assert_eq!(d1, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(l2.1.shape(), vec![2, 3]);
+        let d2: Vec<f32> = l2.1.data().iter().copied().collect();
         assert_eq!(d2, vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
     }
 

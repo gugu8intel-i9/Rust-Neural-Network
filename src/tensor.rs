@@ -307,8 +307,18 @@ impl Tensor {
     pub fn matmul(&self, other: &Tensor) -> Tensor {
         let a = self.0.read().unwrap().data.clone().into_dimensionality::<ndarray::Ix2>().expect("MatMul expects 2D");
         let b = other.0.read().unwrap().data.clone().into_dimensionality::<ndarray::Ix2>().expect("MatMul expects 2D");
-        let res_data = a.dot(&b).into_dyn();
-        
+
+        let (m, k) = (a.shape()[0], a.shape()[1]);
+        let n = b.shape()[1];
+
+        // Use the SIMD-accelerated, cache-blocked, multi-threaded GEMM kernel.
+        let a_flat: Vec<f32> = a.iter().copied().collect();
+        let b_flat: Vec<f32> = b.iter().copied().collect();
+        let mut c_flat = vec![0.0f32; m * n];
+        crate::simd::simd_matmul(&a_flat, &b_flat, &mut c_flat, m, k, n);
+
+        let res_data = ArrayD::from_shape_vec(IxDyn(&[m, n]), c_flat).unwrap();
+
         let requires_grad = self.0.read().unwrap().requires_grad || other.0.read().unwrap().requires_grad;
         let res = Tensor::new(res_data, requires_grad);
         if requires_grad {

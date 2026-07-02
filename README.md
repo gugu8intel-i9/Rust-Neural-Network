@@ -477,6 +477,19 @@ cargo test
 
 ## Changelog
 
+### 0.10.0 — SIMD-accelerated CPU kernels
+
+- **Cache-blocked SIMD GEMM** (`src/simd.rs`): matrix multiplication using AVX2+FMA intrinsics
+  (8 × f32 per instruction, fused multiply-add), cache blocking (L1/L2-sized tiles), and
+  multi-threaded parallelism across row-blocks (rayon). Runtime feature detection with scalar
+  fallback on unsupported CPUs. Wired into `Tensor::matmul` — every matmul in the library now
+  goes through this kernel.
+- **Vectorized element-wise ops**: SIMD `add`, `mul`, `relu`, `scale`, and `sum` reduction,
+  all with AVX2 dispatch and scalar fallback.
+- **Innovations**: exploits all three CPU strengths simultaneously — SIMD vectorization
+  (amortize per-element compute across 8-wide registers), cache blocking (keep working set in
+  L1/L2 to avoid memory bandwidth stalls), and multi-core parallelism (independent row-blocks).
+
 ### 0.9.0 — Iterative autograd, GPU acceleration, model serialization
 
 - **Iterative topological-sort backward**: replaced the recursive `backward()` with a
@@ -626,6 +639,7 @@ This release makes the crate **actually compile and train**. Notable fixes:
 What's done and what's planned:
 
 - [x] **Autograd engine**: reverse-mode automatic differentiation with correct broadcasting.
+- [x] **SIMD-accelerated CPU**: cache-blocked AVX2/FMA GEMM + vectorized ops.
 - [x] **Iterative autograd**: non-recursive topological-sort backward (no stack overflow).
 - [x] **GPU acceleration**: WebGPU compute shaders (wgpu) with CPU fallback.
 - [x] **Model serialization**: binary format + safetensors interop.

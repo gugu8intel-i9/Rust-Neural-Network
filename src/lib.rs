@@ -52,6 +52,7 @@ pub mod tokenizer;
 pub mod position;
 pub mod serialize;
 pub mod gpu;
+pub mod simd;
 
 // Re-export main types for convenient access
 pub use tensor::Tensor;
@@ -73,6 +74,7 @@ pub use tokenizer::{BpeTokenizer, MergeScoring};
 pub use position::{RoPE, CARoPE, AlibiBias, SinusoidalPE, LearnedPE, PositionalEncoding};
 pub use serialize::{serialize, deserialize, save_model, load_model, save_model_named, safetensors_export, safetensors_import};
 pub use gpu::{gpu_matmul, gpu_add, gpu_mul, has_gpu, GpuBackend};
+pub use simd::{simd_matmul, simd_add, simd_mul, simd_relu, simd_scale, simd_sum, simd_features};
 pub use rl::{
     Environment, Reinforce, ActorCritic, Dqn, Ppo, ReplayBuffer, Transition,
     BanditEnv, ChainEnv, sample_categorical, discounted_returns,
