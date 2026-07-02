@@ -53,6 +53,8 @@ pub mod position;
 pub mod serialize;
 pub mod gpu;
 pub mod simd;
+pub mod data;
+pub mod interactive;
 
 // Re-export main types for convenient access
 pub use tensor::Tensor;
@@ -75,6 +77,8 @@ pub use position::{RoPE, CARoPE, AlibiBias, SinusoidalPE, LearnedPE, PositionalE
 pub use serialize::{serialize, deserialize, save_model, load_model, save_model_named, safetensors_export, safetensors_import};
 pub use gpu::{gpu_matmul, gpu_add, gpu_mul, has_gpu, GpuBackend};
 pub use simd::{simd_matmul, simd_add, simd_mul, simd_relu, simd_scale, simd_sum, simd_features};
+pub use data::{Dataset, Column, load_csv, load_tsv, load_jsonl, load_huggingface, load_kaggle, make_classification, make_regression};
+pub use interactive::{run_repl, Session};
 pub use rl::{
     Environment, Reinforce, ActorCritic, Dqn, Ppo, ReplayBuffer, Transition,
     BanditEnv, ChainEnv, sample_categorical, discounted_returns,

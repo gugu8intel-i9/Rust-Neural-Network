@@ -477,6 +477,22 @@ cargo test
 
 ## Changelog
 
+### 0.11.0 — Interactive REPL + multi-source dataset loading
+
+- **Interactive REPL** (`src/interactive.rs`): a readline-style session for building models
+  layer-by-layer, loading datasets, and training with live ASCII sparkline loss curves.
+  Commands: `model new/add/summary`, `data csv/hf/synthetic`, `train`, `predict`, `info`.
+- **Dataset module** (`src/data.rs`): unified `Dataset` abstraction with:
+  - **HuggingFace Hub loading** via the Datasets Server REST API (`/rows` endpoint) — streams
+    rows in batches of 100 without downloading the whole dataset. Local caching.
+  - **CSV/TSV/JSONL** loading with dependency-free parsers and automatic type inference.
+  - **Kaggle** loading (requires API credentials).
+  - **Synthetic generators**: `make_classification` and `make_regression`.
+  - **Tensor conversion**: `to_tensor()` for numeric features, `to_token_tensor()` for text.
+  - **Train/test splitting**, `head()`, and `summary()`.
+- 12 new tests covering CSV parsing (quoted fields, type inference), JSONL loading, tensor
+  conversion, dataset splitting, synthetic generation, sparkline rendering, and REPL commands.
+
 ### 0.10.0 — SIMD-accelerated CPU kernels
 
 - **Cache-blocked SIMD GEMM** (`src/simd.rs`): matrix multiplication using AVX2+FMA intrinsics
@@ -643,6 +659,8 @@ What's done and what's planned:
 - [x] **Iterative autograd**: non-recursive topological-sort backward (no stack overflow).
 - [x] **GPU acceleration**: WebGPU compute shaders (wgpu) with CPU fallback.
 - [x] **Model serialization**: binary format + safetensors interop.
+- [x] **Interactive REPL**: exploratory model building + live training visualization.
+- [x] **Dataset loading**: HuggingFace Hub, CSV/TSV/JSONL, Kaggle, synthetic.
 - [x] **Core layers & optimizers**: Linear, Dropout, BatchNorm, MoE, RNN; SGD/Adam/RMSprop/Muon.
 - [x] **Attention**: exact, memory-efficient FlashAttention + multi-head, with RoPE.
 - [x] **Positional Encodings**: RoPE, YaRN, ALiBi, CARoPE, sinusoidal, learned.
