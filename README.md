@@ -477,6 +477,25 @@ cargo test
 
 ## Changelog
 
+### 0.12.0 — Platform-specific GPU kernels (NVIDIA / AMD / Apple)
+
+- **NVIDIA CUDA (PTX)**: a shared-memory-tiled, register-blocked FP32 GEMM in PTX assembly.
+  Each block cooperatively loads tiles via `st.shared.f32`, computes with `fma.rn.f32` FMA
+  instructions, and synchronizes with `bar.sync`. Register blocking: each thread accumulates 8
+  output elements in registers (8:1 arithmetic-to-memory ratio).
+- **Apple Silicon (Metal MSL)**: a GEMM using `simdgroup_float8x8` hardware matrix units and
+  `simdgroup_multiply_accumulate` — Apple`s equivalent of Tensor Cores. Features `simdgroup_async_copy`
+  for double-buffered device->threadgroup transfer that overlaps memory with computation.
+- **AMD ROCm (HIP-C)**: a GEMM using LDS (Local Data Share) tiling with bank-conflict-free padded
+  layouts, targeting MFMA (Matrix FMA) wave-level instructions on CDNA GPUs.
+- **Unified auto-dispatch** (`detect_backend`): probes for CUDA/ROCm/Metal/WebGPU at runtime and
+  selects the optimal backend. Falls back to the SIMD CPU kernel when no GPU is available.
+- **Tile auto-tuning** (`TileConfig`): optimal BM/BN/BK tile sizes per architecture, with
+  arithmetic-intensity and shared-memory estimates.
+- **Kernel extraction** (`extract_kernels`): writes `.ptx`, `.metal`, `.hip` files for offline
+  compilation via nvrtc / Metal compiler / hipRTC.
+- 15 new tests validating kernel source correctness, dispatch logic, tile configs, and matmul.
+
 ### 0.11.0 — Interactive REPL + multi-source dataset loading
 
 - **Interactive REPL** (`src/interactive.rs`): a readline-style session for building models
@@ -656,6 +675,7 @@ What's done and what's planned:
 
 - [x] **Autograd engine**: reverse-mode automatic differentiation with correct broadcasting.
 - [x] **SIMD-accelerated CPU**: cache-blocked AVX2/FMA GEMM + vectorized ops.
+- [x] **Native GPU kernels**: NVIDIA PTX, AMD HIP, Apple Metal with auto-dispatch.
 - [x] **Iterative autograd**: non-recursive topological-sort backward (no stack overflow).
 - [x] **GPU acceleration**: WebGPU compute shaders (wgpu) with CPU fallback.
 - [x] **Model serialization**: binary format + safetensors interop.

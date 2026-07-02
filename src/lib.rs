@@ -55,6 +55,7 @@ pub mod gpu;
 pub mod simd;
 pub mod data;
 pub mod interactive;
+pub mod gpu_kernels;
 
 // Re-export main types for convenient access
 pub use tensor::Tensor;
@@ -79,6 +80,11 @@ pub use gpu::{gpu_matmul, gpu_add, gpu_mul, has_gpu, GpuBackend};
 pub use simd::{simd_matmul, simd_add, simd_mul, simd_relu, simd_scale, simd_sum, simd_features};
 pub use data::{Dataset, Column, load_csv, load_tsv, load_jsonl, load_huggingface, load_kaggle, make_classification, make_regression};
 pub use interactive::{run_repl, Session};
+pub use gpu_kernels::{
+    GpuBackendKind, TileConfig, kernel_matmul, kernel_matmul_with_backend,
+    detect_backend, active_backend, set_backend, kernel_source, extract_kernels,
+    backend_report, NVIDIA_PTX_KERNEL, APPLE_MSL_KERNEL, AMD_HIP_KERNEL,
+};
 pub use rl::{
     Environment, Reinforce, ActorCritic, Dqn, Ppo, ReplayBuffer, Transition,
     BanditEnv, ChainEnv, sample_categorical, discounted_returns,
