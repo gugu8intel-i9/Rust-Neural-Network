@@ -117,6 +117,14 @@ fn inner_kernel_strided(
 
 /// AVX2 + FMA inner kernel (strided).
 ///
+/// # Safety
+///
+/// This function uses AVX2 + FMA intrinsics and requires `avx2` and `fma` CPU features.
+/// The caller MUST ensure `is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")`
+/// before calling. All slice accesses use `get_unchecked` which assumes the indices are in bounds;
+/// the strided indexing (`i * lda + p`, `p * ldb + j`) is valid as long as the caller passes
+/// correct leading dimensions that do not cause OOB access.
+///
 /// For each row of A (stride `lda`), broadcasts each element to 8-wide and uses FMA to accumulate
 /// 8 columns of C (stride `ldc`). B rows have stride `ldb`.
 #[cfg(target_arch = "x86_64")]
@@ -269,6 +277,9 @@ pub fn simd_sum(x: &[f32]) -> f32 {
 // ==================== AVX2 implementations ====================
 
 #[cfg(target_arch = "x86_64")]
+/// # Safety
+/// Requires AVX2. All vector loads/stores are on slices the caller has verified
+/// are at least 8 elements long, with scalar cleanup for the remainder.
 #[target_feature(enable = "avx2")]
 unsafe fn simd_add_avx2(a: &[f32], b: &[f32], out: &mut [f32]) {
     use std::arch::x86_64::*;
@@ -287,6 +298,9 @@ unsafe fn simd_add_avx2(a: &[f32], b: &[f32], out: &mut [f32]) {
 }
 
 #[cfg(target_arch = "x86_64")]
+/// # Safety
+/// Requires AVX2. All vector loads/stores are on slices the caller has verified
+/// are at least 8 elements long, with scalar cleanup for the remainder.
 #[target_feature(enable = "avx2")]
 unsafe fn simd_mul_avx2(a: &[f32], b: &[f32], out: &mut [f32]) {
     use std::arch::x86_64::*;
@@ -305,6 +319,9 @@ unsafe fn simd_mul_avx2(a: &[f32], b: &[f32], out: &mut [f32]) {
 }
 
 #[cfg(target_arch = "x86_64")]
+/// # Safety
+/// Requires AVX2. All vector loads/stores are on slices the caller has verified
+/// are at least 8 elements long, with scalar cleanup for the remainder.
 #[target_feature(enable = "avx2")]
 unsafe fn simd_relu_avx2(x: &[f32], out: &mut [f32]) {
     use std::arch::x86_64::*;
@@ -323,6 +340,9 @@ unsafe fn simd_relu_avx2(x: &[f32], out: &mut [f32]) {
 }
 
 #[cfg(target_arch = "x86_64")]
+/// # Safety
+/// Requires AVX2. All vector loads/stores are on slices the caller has verified
+/// are at least 8 elements long, with scalar cleanup for the remainder.
 #[target_feature(enable = "avx2")]
 unsafe fn simd_scale_avx2(x: &[f32], scale: f32, out: &mut [f32]) {
     use std::arch::x86_64::*;
@@ -341,6 +361,9 @@ unsafe fn simd_scale_avx2(x: &[f32], scale: f32, out: &mut [f32]) {
 }
 
 #[cfg(target_arch = "x86_64")]
+/// # Safety
+/// Requires AVX2. All vector loads/stores are on slices the caller has verified
+/// are at least 8 elements long, with scalar cleanup for the remainder.
 #[target_feature(enable = "avx2")]
 unsafe fn simd_sum_avx2(x: &[f32]) -> f32 {
     use std::arch::x86_64::*;

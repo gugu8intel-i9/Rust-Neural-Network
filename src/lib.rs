@@ -1,3 +1,10 @@
+// Production lint configuration.
+#![allow(missing_docs)] // TODO: add docs in a dedicated PR
+#![allow(clippy::unwrap_in_result)] // TODO: eliminate all unwraps in Result-returning functions
+#![allow(clippy::panic)] // TODO: replace panics with Result in production paths
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_range_loop)]
+
 //! # rust-nn
 //!
 //! A high-performance, ergonomic neural network library in Rust.
@@ -35,6 +42,7 @@
 //! - **Loss Functions**: MSE, Cross-Entropy
 //! - **Training Utilities**: Data loaders and trainers
 
+pub mod error;
 pub mod tensor;
 pub mod activations;
 pub mod nn;
@@ -58,6 +66,7 @@ pub mod interactive;
 pub mod gpu_kernels;
 
 // Re-export main types for convenient access
+pub use error::{RustNnError, Result};
 pub use tensor::Tensor;
 pub use activations::{relu, sigmoid, tanh, softmax, gelu};
 pub use nn::{

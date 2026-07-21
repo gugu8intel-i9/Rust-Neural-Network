@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "rust-nn"
-version = "0.12.0"
+version = "1.0.0"
 dependencies = [
  "approx",
  "ndarray",
