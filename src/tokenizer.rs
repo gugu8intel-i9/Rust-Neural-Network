@@ -115,7 +115,7 @@ impl BpeTokenizer {
             offsets.push(vocab_bytes.len() as u32);
         }
         // Append special tokens.
-        for (text, _id) in self.special.iter() {
+        for text in self.special.keys() {
             vocab_bytes.extend_from_slice(text.as_bytes());
             offsets.push(vocab_bytes.len() as u32);
         }
