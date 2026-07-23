@@ -68,6 +68,7 @@ pub mod distributed;
 pub mod int8;
 pub mod fused;
 pub mod offload;
+pub mod finetune;
 pub mod gui;
 
 // Re-export main types for convenient access
@@ -107,6 +108,7 @@ pub use gpu_kernels::{
 };
 pub use int8::{Int8Weights, Int8Linear};
 pub use fused::{fused_linear, FusedActivation, sparse_topk_route};
+pub use finetune::{LoraAdapter, LrSchedule, FastTrainer, FastTrainConfig, TrainPoint};
 pub use offload::{
     MemoryTier, OffloadConfig, TieredStore, TieredTensor, SsdTensor, OffloadModel,
 };
