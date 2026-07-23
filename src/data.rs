@@ -786,3 +786,452 @@ mod tests {
         assert_eq!(pairs[1].1, "1");
     }
 }
+
+// ==================== Credential management ====================
+
+/// Manages authentication tokens for HuggingFace and Kaggle.
+#[derive(Debug, Clone, Default)]
+pub struct Credentials {
+    /// HuggingFace access token (from https://huggingface.co/settings/tokens).
+    pub hf_token: Option<String>,
+    /// Kaggle username.
+    pub kaggle_username: Option<String>,
+    /// Kaggle API key (from https://www.kaggle.com -> Account -> Create New Token).
+    pub kaggle_key: Option<String>,
+}
+
+impl Credentials {
+    /// Create empty credentials.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Load credentials from environment variables.
+    /// Checks `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN` for HuggingFace,
+    /// `KAGGLE_USERNAME` and `KAGGLE_KEY` for Kaggle.
+    pub fn from_env() -> Self {
+        let hf_token = std::env::var("HF_TOKEN")
+            .or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
+            .ok();
+        let kaggle_username = std::env::var("KAGGLE_USERNAME").ok();
+        let kaggle_key = std::env::var("KAGGLE_KEY").ok();
+        Credentials { hf_token, kaggle_username, kaggle_key }
+    }
+
+    /// Set HuggingFace token.
+    pub fn with_hf_token(mut self, token: impl Into<String>) -> Self {
+        self.hf_token = Some(token.into());
+        self
+    }
+
+    /// Set Kaggle credentials.
+    pub fn with_kaggle(mut self, username: impl Into<String>, key: impl Into<String>) -> Self {
+        self.kaggle_username = Some(username.into());
+        self.kaggle_key = Some(key.into());
+        self
+    }
+
+    /// Check if HuggingFace authentication is available.
+    pub fn has_hf(&self) -> bool { self.hf_token.is_some() }
+
+    /// Check if Kaggle authentication is available.
+    pub fn has_kaggle(&self) -> bool { self.kaggle_username.is_some() && self.kaggle_key.is_some() }
+
+    /// Save credentials to `~/.rust-nn/credentials.toml` for persistence across sessions.
+    pub fn save(&self) -> std::io::Result<()> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let dir = format!("{home}/.rust-nn");
+        std::fs::create_dir_all(&dir)?;
+        let mut content = String::new();
+        if let Some(ref t) = self.hf_token { content.push_str(&format!("[huggingface]\ntoken = \"{t}\"\n")); }
+        if let (Some(u), Some(k)) = (&self.kaggle_username, &self.kaggle_key) {
+            content.push_str(&format!("[kaggle]\nusername = \"{u}\"\nkey = \"{k}\"\n"));
+        }
+        std::fs::write(format!("{dir}/credentials.toml"), content)
+    }
+
+    /// Load credentials from `~/.rust-nn/credentials.toml`.
+    pub fn load() -> Self {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let path = format!("{home}/.rust-nn/credentials.toml");
+        let mut creds = Self::from_env(); // env vars take priority
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let mut section = "";
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('[') && line.ends_with(']') {
+                    section = &line[1..line.len()-1];
+                } else if let Some(eq) = line.find('=') {
+                    let key = line[..eq].trim();
+                    let val = line[eq+1..].trim().trim_matches('"');
+                    match (section, key) {
+                        ("huggingface", "token") => { if creds.hf_token.is_none() { creds.hf_token = Some(val.into()); } }
+                        ("kaggle", "username") => { if creds.kaggle_username.is_none() { creds.kaggle_username = Some(val.into()); } }
+                        ("kaggle", "key") if creds.kaggle_key.is_none() => { creds.kaggle_key = Some(val.into()); }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        creds
+    }
+}
+
+// ==================== Dataset browsing / search ====================
+
+/// A dataset listing entry (name, description, tags).
+#[derive(Debug, Clone)]
+pub struct DatasetListing {
+    pub id: String,
+    pub description: String,
+    pub downloads: u64,
+    pub tags: Vec<String>,
+}
+
+/// Search for datasets on the HuggingFace Hub.
+///
+/// Uses the HuggingFace Hub REST API to search for datasets by keyword.
+/// Returns up to `limit` results.
+pub fn search_huggingface(query: &str, limit: usize, creds: &Credentials) -> Result<Vec<DatasetListing>, String> {
+    let agent = ureq::Agent::new();
+    let url = format!("https://huggingface.co/api/datasets?search={query}&limit={limit}");
+    let mut req = agent.get(&url);
+    if let Some(ref token) = creds.hf_token {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    let response = req.call().map_err(|e| format!("HF search failed: {e}"))?;
+    let body = response.into_string().map_err(|e| format!("Read error: {e}"))?;
+
+    // Parse the JSON array response (lightweight parser).
+    let mut listings = Vec::new();
+    // Find each object in the array
+    let trimmed = body.trim();
+    let inner = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(trimmed);
+    for obj_str in split_json_objects(inner) {
+        let pairs = parse_simple_json_object(&obj_str);
+        let mut id = String::new();
+        let mut downloads = 0u64;
+        let mut desc = String::new();
+        for (key, val) in &pairs {
+            match key.as_str() {
+                "id" => id = val.clone(),
+                "downloads" => downloads = val.parse().unwrap_or(0),
+                "description" => desc = val.clone(),
+                _ => {}
+            }
+        }
+        if !id.is_empty() {
+            listings.push(DatasetListing {
+                id,
+                description: desc,
+                downloads,
+                tags: Vec::new(),
+            });
+        }
+        if listings.len() >= limit { break; }
+    }
+    Ok(listings)
+}
+
+/// Search for datasets on Kaggle.
+///
+/// Uses the Kaggle API to list datasets matching a search query.
+/// Requires Kaggle credentials.
+pub fn search_kaggle(query: &str, limit: usize, creds: &Credentials) -> Result<Vec<DatasetListing>, String> {
+    let username = creds.kaggle_username.as_ref().ok_or("Kaggle credentials required. Set KAGGLE_USERNAME and KAGGLE_KEY.")?;
+    let key = creds.kaggle_key.as_ref().ok_or("Kaggle key required.")?;
+    let agent = ureq::Agent::new();
+    let url = format!("https://www.kaggle.com/api/v1/datasets/list?search={query}&page=1");
+    let response = agent
+        .get(&url)
+        .set("Authorization", &format!("Basic {}", base64_encode(&format!("{username}:{key}"))))
+        .call()
+        .map_err(|e| format!("Kaggle search failed: {e}"))?;
+    let body = response.into_string().map_err(|e| format!("Read error: {e}"))?;
+    let mut listings = Vec::new();
+    let inner = body.trim().strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(&body);
+    for obj_str in split_json_objects(inner) {
+        let pairs = parse_simple_json_object(&obj_str);
+        let mut id = String::new();
+        let mut desc = String::new();
+        let mut downloads = 0u64;
+        for (key, val) in &pairs {
+            match key.as_str() {
+                "ref" | "id" => id = val.clone(),
+                "title" => desc = val.clone(),
+                "totalViews" | "downloadCount" => downloads = val.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+        if !id.is_empty() {
+            listings.push(DatasetListing { id, description: desc, downloads, tags: Vec::new() });
+        }
+        if listings.len() >= limit { break; }
+    }
+    Ok(listings)
+}
+
+/// Format dataset listings as a readable table.
+pub fn format_listings(listings: &[DatasetListing]) -> String {
+    if listings.is_empty() { return "No datasets found.".into(); }
+    let mut out = String::new();
+    out.push_str(&format!("Found {} datasets:\n\n", listings.len()));
+    for (i, ds) in listings.iter().enumerate() {
+        out.push_str(&format!("  {}. {}\n", i + 1, ds.id));
+        if !ds.description.is_empty() {
+            let desc = if ds.description.len() > 80 { &ds.description[..80] } else { &ds.description };
+            out.push_str(&format!("     {desc}...\n"));
+        }
+        if ds.downloads > 0 {
+            out.push_str(&format!("     Downloads: {}\n", ds.downloads));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Split a JSON array body into individual object strings.
+fn split_json_objects(body: &str) -> Vec<String> {
+    let mut objects = Vec::new();
+    let mut depth = 0i32;
+    let mut start = None;
+    for (i, ch) in body.char_indices() {
+        match ch {
+            '{' => {
+                if depth == 0 { start = Some(i); }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(s) = start {
+                        objects.push(body[s..=i].to_string());
+                    }
+                    start = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    objects
+}
+
+// ==================== Dataset builder (create your own) ====================
+
+/// Builder for creating custom datasets programmatically.
+///
+/// # Example
+/// ```ignore
+/// use rust_nn::data::DatasetBuilder;
+///
+/// let dataset = DatasetBuilder::new("my-dataset")
+///     .add_float_row(&[1.0, 2.0, 3.0], 0.0)
+///     .add_float_row(&[4.0, 5.0, 6.0], 1.0)
+///     .add_float_row(&[7.0, 8.0, 9.0], 0.0)
+///     .build();
+/// ```
+#[derive(Debug)]
+pub struct DatasetBuilder {
+    name: String,
+    float_columns: HashMap<String, Vec<f32>>,
+    text_columns: HashMap<String, Vec<String>>,
+    num_rows: usize,
+}
+
+impl DatasetBuilder {
+    /// Create a new dataset builder.
+    pub fn new(name: impl Into<String>) -> Self {
+        DatasetBuilder {
+            name: name.into(),
+            float_columns: HashMap::new(),
+            text_columns: HashMap::new(),
+            num_rows: 0,
+        }
+    }
+
+    /// Add a row of float features with a float label.
+    pub fn add_float_row(mut self, features: &[f32], label: f32) -> Self {
+        for (i, &val) in features.iter().enumerate() {
+            self.float_columns.entry(format!("f{i}")).or_default().push(val);
+        }
+        self.float_columns.entry("label".into()).or_default().push(label);
+        self.num_rows += 1;
+        self
+    }
+
+    /// Add a row of text features with a text label.
+    pub fn add_text_row(mut self, text: &str, label: &str) -> Self {
+        self.text_columns.entry("text".into()).or_default().push(text.into());
+        self.text_columns.entry("label".into()).or_default().push(label.into());
+        self.num_rows += 1;
+        self
+    }
+
+    /// Add a named float column.
+    pub fn add_float_column(mut self, name: &str, data: Vec<f32>) -> Self {
+        self.num_rows = self.num_rows.max(data.len());
+        self.float_columns.insert(name.into(), data);
+        self
+    }
+
+    /// Add a named text column.
+    pub fn add_text_column(mut self, name: &str, data: Vec<String>) -> Self {
+        self.num_rows = self.num_rows.max(data.len());
+        self.text_columns.insert(name.into(), data);
+        self
+    }
+
+    /// Build the dataset.
+    pub fn build(self) -> Dataset {
+        let mut ds = Dataset::new(self.name);
+        ds.num_rows = self.num_rows;
+        for (name, data) in self.float_columns {
+            ds.add_float_column(&name, data);
+        }
+        for (name, data) in self.text_columns {
+            ds.add_text_column(&name, data);
+        }
+        ds
+    }
+
+    /// Build and save as CSV.
+    pub fn build_csv(&self, path: &str) -> std::io::Result<()> {
+        let mut content = String::new();
+        // Header
+        let mut headers: Vec<&str> = self.float_columns.keys().map(|s| s.as_str()).collect();
+        headers.extend(self.text_columns.keys().map(|s| s.as_str()));
+        content.push_str(&headers.join(","));
+        content.push('\n');
+        // Rows
+        for row in 0..self.num_rows {
+            let mut fields = Vec::new();
+            for h in &headers {
+                if let Some(col) = self.float_columns.get(*h) {
+                    fields.push(col.get(row).copied().unwrap_or(0.0).to_string());
+                } else if let Some(col) = self.text_columns.get(*h) {
+                    fields.push(format!("\"{}\"", col.get(row).map(|s| s.as_str()).unwrap_or("")));
+                }
+            }
+            content.push_str(&fields.join(","));
+            content.push('\n');
+        }
+        std::fs::write(path, content)
+    }
+}
+
+/// Load a HuggingFace dataset with credentials.
+pub fn load_huggingface_auth(
+    dataset: &str,
+    split: &str,
+    max_rows: usize,
+    creds: &Credentials,
+) -> Result<Dataset, String> {
+    load_huggingface(dataset, split, max_rows, creds.hf_token.as_deref())
+}
+
+/// Load a Kaggle dataset with credentials (downloads CSV file).
+pub fn load_kaggle_auth(
+    dataset: &str,
+    file: &str,
+    creds: &Credentials,
+) -> Result<Dataset, String> {
+    let username = creds.kaggle_username.as_ref().ok_or("Kaggle username required")?;
+    let key = creds.kaggle_key.as_ref().ok_or("Kaggle key required")?;
+    let url = format!("https://www.kaggle.com/api/v1/datasets/download/{dataset}");
+    let agent = ureq::Agent::new();
+    let response = agent
+        .get(&url)
+        .set("Authorization", &format!("Basic {}", base64_encode(&format!("{username}:{key}"))))
+        .call()
+        .map_err(|e| format!("Kaggle download failed: {e}"))?;
+    let body = response.into_string().map_err(|e| format!("Read error: {e}"))?;
+    if file.ends_with(".csv") {
+        parse_delimited(&body, ',')
+    } else {
+        Err(format!("File '{file}' needs ZIP extraction. Extract manually and use load_csv()."))
+    }
+}
+
+#[cfg(test)]
+mod tests_creds {
+    use super::*;
+
+    #[test]
+    fn credentials_builder() {
+        let c = Credentials::new()
+            .with_hf_token("hf_test123")
+            .with_kaggle("user", "key456");
+        assert!(c.has_hf());
+        assert!(c.has_kaggle());
+    }
+
+    #[test]
+    fn credentials_empty() {
+        let c = Credentials::new();
+        assert!(!c.has_hf());
+        assert!(!c.has_kaggle());
+    }
+
+    #[test]
+    fn dataset_builder_float() {
+        let ds = DatasetBuilder::new("test")
+            .add_float_row(&[1.0, 2.0], 0.0)
+            .add_float_row(&[3.0, 4.0], 1.0)
+            .build();
+        assert_eq!(ds.num_rows, 2);
+        assert!(ds.get_float("f0").is_some());
+        assert!(ds.get_float("label").is_some());
+    }
+
+    #[test]
+    fn dataset_builder_text() {
+        let ds = DatasetBuilder::new("text_ds")
+            .add_text_row("hello world", "positive")
+            .add_text_row("bad day", "negative")
+            .build();
+        assert_eq!(ds.num_rows, 2);
+        assert!(ds.get_text("text").is_some());
+    }
+
+    #[test]
+    fn dataset_builder_named_columns() {
+        let ds = DatasetBuilder::new("named")
+            .add_float_column("x", vec![1.0, 2.0, 3.0])
+            .add_float_column("y", vec![4.0, 5.0, 6.0])
+            .add_text_column("category", vec!["a".into(), "b".into(), "c".into()])
+            .build();
+        assert_eq!(ds.num_rows, 3);
+        assert!(ds.get_float("x").is_some());
+        assert!(ds.get_text("category").is_some());
+    }
+
+    #[test]
+    fn dataset_builder_csv() {
+        let builder = DatasetBuilder::new("csv_test")
+            .add_float_column("a", vec![1.0, 2.0])
+            .add_float_column("b", vec![3.0, 4.0]);
+        builder.build_csv("/tmp/test_builder.csv").unwrap();
+        let content = std::fs::read_to_string("/tmp/test_builder.csv").unwrap();
+        assert!(content.contains("a,b"));
+        assert!(content.contains("1"));
+    }
+
+    #[test]
+    fn split_json_objects_basic() {
+        let json = r#"[{"id":"a","x":1},{"id":"b","x":2}]"#;
+        let inner = json.trim().strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap();
+        let objs = split_json_objects(inner);
+        assert_eq!(objs.len(), 2);
+        assert!(objs[0].contains("\"a\""));
+    }
+
+    #[test]
+    fn format_listings_display() {
+        let listings = vec![
+            DatasetListing { id: "test/ds1".into(), description: "Test dataset".into(), downloads: 42, tags: vec![] },
+        ];
+        let formatted = format_listings(&listings);
+        assert!(formatted.contains("test/ds1"));
+        assert!(formatted.contains("42"));
+    }
+}
