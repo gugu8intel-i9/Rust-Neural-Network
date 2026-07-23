@@ -211,13 +211,24 @@ impl Module for Dropout {
             return Tensor::zeros(&input.shape());
         }
         use rand::Rng;
+        // Vectorized dropout: generate the entire mask as a batch, then use simd_mul.
         let keep = 1.0 - self.p;
         let scale = 1.0 / keep;
+        let input_data: Vec<f32> = input.data().iter().copied().collect();
+        let n = input_data.len();
+        let mut mask = vec![0.0f32; n];
         let mut rng = rand::thread_rng();
-        let data = input
-            .data()
-            .mapv(|v| if rng.gen::<f32>() < keep { v * scale } else { 0.0 });
-        Tensor::new(data, input.0.read().unwrap().requires_grad)
+        // Batch-generate random values and threshold in one pass (cache-friendly).
+        for m in &mut mask {
+            *m = if rng.gen::<f32>() < keep { scale } else { 0.0 };
+        }
+        // SIMD-accelerated element-wise multiply.
+        let mut out = vec![0.0f32; n];
+        crate::simd::simd_mul(&input_data, &mask, &mut out);
+        Tensor::new(
+            ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&input.shape()), out).unwrap(),
+            input.0.read().unwrap().requires_grad,
+        )
     }
 
     fn parameters(&self) -> Vec<Tensor> {

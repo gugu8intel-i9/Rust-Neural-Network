@@ -32,12 +32,17 @@ pollster = "0.3"
 # HTTP client for dataset loading (lightweight, synchronous, no async runtime)
 ureq = "2.12"
 
+# Fast synchronization primitives (replaces std::sync::RwLock in hot paths)
+parking_lot = "0.12"
+
 # Optional serialization
 serde = { version = "1.0", features = ["derive"], optional = true }
 
 [dev-dependencies]
 # For testing
 approx = "0.5"
+# Benchmarking
+criterion = "0.5"
 
 [features]
 default = []
@@ -46,6 +51,10 @@ serde = ["dep:serde"]
 apple-accelerate = ["ndarray/blas"]
 openblas = ["ndarray/blas"]
 intel-mkl = ["ndarray/blas"]
+
+[[bench]]
+name = "core_ops"
+harness = false
 
 [profile.release]
 opt-level = 3

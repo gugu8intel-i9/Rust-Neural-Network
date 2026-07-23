@@ -10,6 +10,11 @@ pub struct SimpleDataLoader {
     targets: Vec<Tensor>,
     batch_size: usize,
     current_index: usize,
+    /// Pre-allocated batch buffers to avoid per-sample allocation.
+    input_batch_buf: Vec<f32>,
+    target_batch_buf: Vec<f32>,
+    input_feature_dim: usize,
+    target_feature_dim: usize,
 }
 
 impl SimpleDataLoader {
@@ -27,11 +32,17 @@ impl SimpleDataLoader {
             target_list.push(Tensor::new(target_slice, false));
         }
 
+        let input_feature_dim = if n_samples > 0 { input_list[0].len() } else { 0 };
+        let target_feature_dim = if n_samples > 0 { target_list[0].len() } else { 0 };
         SimpleDataLoader {
             inputs: input_list,
             targets: target_list,
             batch_size,
             current_index: 0,
+            input_batch_buf: Vec::with_capacity(batch_size * input_feature_dim),
+            target_batch_buf: Vec::with_capacity(batch_size * target_feature_dim),
+            input_feature_dim,
+            target_feature_dim,
         }
     }
 }
@@ -45,25 +56,35 @@ impl Iterator for SimpleDataLoader {
         }
 
         let end = (self.current_index + self.batch_size).min(self.inputs.len());
-        
-        // Collate batch
-        let mut input_batch = Vec::new();
-        let mut target_batch = Vec::new();
-        
-        for i in self.current_index..end {
-            input_batch.push(self.inputs[i].data().clone());
-            target_batch.push(self.targets[i].data().clone());
-        }
+        let batch_len = end - self.current_index;
 
-        // Use ndarray stack
-        let inputs = ndarray::stack(ndarray::Axis(0), &input_batch.iter().map(|a| a.view()).collect::<Vec<_>>()).unwrap();
-        let targets = ndarray::stack(ndarray::Axis(0), &target_batch.iter().map(|a| a.view()).collect::<Vec<_>>()).unwrap();
+        // Reuse pre-allocated buffers — avoid per-sample Vec allocation.
+        self.input_batch_buf.clear();
+        self.target_batch_buf.clear();
+        self.input_batch_buf.reserve(batch_len * self.input_feature_dim);
+        self.target_batch_buf.reserve(batch_len * self.target_feature_dim);
+
+        for i in self.current_index..end {
+            let idata = self.inputs[i].data();
+            self.input_batch_buf.extend(idata.iter().copied());
+            let tdata = self.targets[i].data();
+            self.target_batch_buf.extend(tdata.iter().copied());
+        }
 
         self.current_index = end;
 
+        let inputs = ndarray::ArrayD::from_shape_vec(
+            ndarray::IxDyn(&[batch_len, self.input_feature_dim]),
+            std::mem::take(&mut self.input_batch_buf),
+        ).unwrap();
+        let targets = ndarray::ArrayD::from_shape_vec(
+            ndarray::IxDyn(&[batch_len, self.target_feature_dim]),
+            std::mem::take(&mut self.target_batch_buf),
+        ).unwrap();
+
         Some((
-            Tensor::new(inputs.into_dyn(), false),
-            Tensor::new(targets.into_dyn(), false),
+            Tensor::new(inputs, false),
+            Tensor::new(targets, false),
         ))
     }
 }

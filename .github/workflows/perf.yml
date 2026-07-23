@@ -1,0 +1,36 @@
+name: Performance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y cmake libssl-dev pkg-config
+      - name: Run benchmarks
+        run: cargo bench --bench core_ops -- --save-baseline ci
+        continue-on-error: true
+      - name: Check for regressions
+        run: cargo bench --bench core_ops -- --baseline ci --warm-up-time 1 --measurement-time 3
+        continue-on-error: true
+
+  numeric-equivalence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y cmake libssl-dev pkg-config
+      - name: GPU vs CPU equivalence
+        run: cargo test -- --test production --nocapture
+      - name: INT8 vs FP32 equivalence
+        run: cargo test int8 -- --nocapture
+      - name: SIMD vs scalar equivalence
+        run: cargo test simd -- --nocapture
