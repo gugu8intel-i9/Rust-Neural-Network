@@ -64,6 +64,7 @@ pub mod simd;
 pub mod data;
 pub mod interactive;
 pub mod gpu_kernels;
+pub mod distributed;
 pub mod gui;
 
 // Re-export main types for convenient access
@@ -100,6 +101,12 @@ pub use gpu_kernels::{
     GpuBackendKind, TileConfig, kernel_matmul, kernel_matmul_with_backend,
     detect_backend, active_backend, set_backend, kernel_source, extract_kernels,
     backend_report, NVIDIA_PTX_KERNEL, APPLE_MSL_KERNEL, AMD_HIP_KERNEL,
+};
+pub use distributed::{
+    DistributedConfig, DistributedWorker, Message, MessageType,
+    ring_all_reduce_simulated, average_gradients, flatten_gradients,
+    unflatten_gradients, sync_gradients, clip_gradients,
+    send_message, recv_message,
 };
 pub use gui::{ModelDashboard, TrainingDashboard, tensor_heatmap_html, launch, full_dashboard};
 pub use rl::{

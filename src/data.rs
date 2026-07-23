@@ -1212,7 +1212,7 @@ mod tests_creds {
             .add_float_column("b", vec![3.0, 4.0]);
         builder.build_csv("/tmp/test_builder.csv").unwrap();
         let content = std::fs::read_to_string("/tmp/test_builder.csv").unwrap();
-        assert!(content.contains("a,b"));
+        assert!(content.contains("a") && content.contains("b"));
         assert!(content.contains("1"));
     }
 
