@@ -65,6 +65,7 @@ pub mod data;
 pub mod interactive;
 pub mod gpu_kernels;
 pub mod distributed;
+pub mod int8;
 pub mod gui;
 
 // Re-export main types for convenient access
@@ -102,6 +103,7 @@ pub use gpu_kernels::{
     detect_backend, active_backend, set_backend, kernel_source, extract_kernels,
     backend_report, NVIDIA_PTX_KERNEL, APPLE_MSL_KERNEL, AMD_HIP_KERNEL,
 };
+pub use int8::{Int8Weights, Int8Linear};
 pub use distributed::{
     DistributedConfig, DistributedWorker, Message, MessageType,
     ring_all_reduce_simulated, average_gradients, flatten_gradients,
