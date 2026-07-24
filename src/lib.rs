@@ -71,6 +71,7 @@ pub mod offload;
 pub mod finetune;
 pub mod quantize;
 pub mod ternary;
+pub mod distill;
 pub mod gui;
 
 // Re-export main types for convenient access
@@ -110,6 +111,7 @@ pub use gpu_kernels::{
 };
 pub use int8::{Int8Weights, Int8Linear};
 pub use fused::{fused_linear, FusedActivation, sparse_topk_route};
+pub use distill::{Distiller, DistillConfig, DistillResult, ProgressiveDistiller};
 pub use ternary::{TernaryTensor, TernaryLinear, TernaryModel, ternarize};
 pub use quantize::{QuantFormat, QuantizedTensor, QuantizedModel, QuantizedLinear, quantize};
 pub use finetune::{LoraAdapter, LrSchedule, FastTrainer, FastTrainConfig, TrainPoint};
