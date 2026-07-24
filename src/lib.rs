@@ -73,6 +73,7 @@ pub mod quantize;
 pub mod ternary;
 pub mod distill;
 pub mod grpo;
+pub mod compression;
 pub mod gui;
 
 // Re-export main types for convenient access
@@ -112,6 +113,11 @@ pub use gpu_kernels::{
 };
 pub use int8::{Int8Weights, Int8Linear};
 pub use fused::{fused_linear, FusedActivation, sparse_topk_route};
+pub use compression::{
+    SharedWeights, SparseMatrix, LayerDropper, KnowledgeTransfer,
+    CompressedEmbedding, MixedSparsity, ProgressiveShrinking,
+    StructuredPruner, CompressionRecipe, CompressionStrategy, automl_search,
+};
 pub use grpo::{
     GrpoConfig, GrpoGroup, GrpoTrainer, GrpoStats,
     RewardModel, RewardScore, RewardWeights, RewardDimension,
