@@ -72,6 +72,7 @@ pub mod finetune;
 pub mod quantize;
 pub mod ternary;
 pub mod distill;
+pub mod grpo;
 pub mod gui;
 
 // Re-export main types for convenient access
@@ -111,6 +112,12 @@ pub use gpu_kernels::{
 };
 pub use int8::{Int8Weights, Int8Linear};
 pub use fused::{fused_linear, FusedActivation, sparse_topk_route};
+pub use grpo::{
+    GrpoConfig, GrpoGroup, GrpoTrainer, GrpoStats,
+    RewardModel, RewardScore, RewardWeights, RewardDimension,
+    CoEvolutionTrainer, CoEvolutionStats, AdversarialEpisode,
+    RepoGraph, FileNode, StructureEdge, StructureEdgeType, parse_rust_file,
+};
 pub use distill::{Distiller, DistillConfig, DistillResult, ProgressiveDistiller};
 pub use ternary::{TernaryTensor, TernaryLinear, TernaryModel, ternarize};
 pub use quantize::{QuantFormat, QuantizedTensor, QuantizedModel, QuantizedLinear, quantize};
