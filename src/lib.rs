@@ -120,7 +120,7 @@ pub use int8::{Int8Linear, Int8Weights};
 pub use interactive::{run_repl, Session};
 pub use linear_attention::{KernelKind, LinearAttention as LinearAttentionLayer};
 pub use looped_transformer::{
-    LoopedTransformer, MultiHeadAttention, Transformer, TransformerBlock,
+    AttentionKind, LoopedTransformer, MultiHeadAttention, Transformer, TransformerBlock,
 };
 pub use loss::{BCELoss, BCEWithLogitsLoss, CrossEntropyLoss, HuberLoss, L1Loss, Loss, MSELoss};
 pub use mamba::{HybridMamba, Mamba, MambaBlock};

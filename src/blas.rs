@@ -130,32 +130,40 @@ pub fn sgemm(
     );
 
     // (1) Scale C by β (and treat β == 0 as "overwrite, do not propagate NaNs").
-    scale_c(c, ldc, m, n, beta);
-
     if m == 0 || n == 0 {
         return;
     }
     if k == 0 || alpha == 0.0 {
+        // No A·B contribution — just `C = β·C`.
+        scale_c(c, ldc, m, n, beta);
         return;
     }
 
-    // (2) Tiny problems: direct scalar kernel, no allocation, no thread pool.
+    // (2) Small matrices: a single serial, ALLOCATION-FREE pass that folds β into the same loop
+    // (no separate scale pass, no thread pool, no packing buffers). For tiny matmuls — the norm
+    // in small-model training — this avoids the per-call buffer allocation of the blocked path and
+    // uses an i-p-j loop order that auto-vectorizes into FMA on contiguous B rows.
     if m * n * k < SMALL_FLOPS {
-        gemm_direct(transa, transb, m, n, k, alpha, a, lda, b, ldb, c, ldc);
+        gemm_small(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
         return;
     }
 
     // (3) Packed, cache-blocked, parallel GEMM.
     // Parallelise across M-blocks: each rayon task uniquely owns its C row-block, so there are
     // no data races even though every task reads the shared `A` and `B`.
+    scale_c(c, ldc, m, n, beta);
+    // Right-size the per-thread packing buffers to the *actual* matrix dimensions (not the full
+    // MC×KC / KC×NC blocks), so small-but-not-tiny matmuls don't over-allocate ~640 KB per call.
+    let buf_a_size = MC.min(m) * KC;
+    let buf_b_size = KC * NC.min(n);
     c.par_chunks_mut(MC * ldc)
         .enumerate()
         .for_each(|(blk, cblk)| {
             let ii = blk * MC;
             let mb = MC.min(m - ii);
             // Per-thread reusable packing buffers (allocated once, reused across K/N blocks).
-            let mut buf_a = vec![0.0f32; MC * KC];
-            let mut buf_b = vec![0.0f32; KC * NC];
+            let mut buf_a = vec![0.0f32; buf_a_size];
+            let mut buf_b = vec![0.0f32; buf_b_size];
 
             for kk in (0..k).step_by(KC) {
                 let kb = KC.min(k - kk);
@@ -195,9 +203,12 @@ pub(crate) fn scale_c(c: &mut [f32], ldc: usize, m: usize, n: usize, beta: f32) 
     }
 }
 
-/// No-blocking scalar GEMM for tiny problems (handles transpose flags inline).
+/// Small-matrix GEMM: a single serial, **allocation-free** pass that folds β into the same loop
+/// as the multiply (no separate scale pass, no thread pool, no packing buffers). Uses an i-p-j
+/// loop order so the inner `j` loop walks a contiguous row of B and a contiguous row of C — which
+/// the compiler turns into packed FMA. Handles both transpose flags inline via strides.
 #[allow(clippy::too_many_arguments)]
-fn gemm_direct(
+fn gemm_small(
     transa: Transpose,
     transb: Transpose,
     m: usize,
@@ -208,26 +219,44 @@ fn gemm_direct(
     lda: usize,
     b: &[f32],
     ldb: usize,
+    beta: f32,
     c: &mut [f32],
     ldc: usize,
 ) {
     for i in 0..m {
-        for j in 0..n {
-            let mut sum = 0.0f32;
-            for p in 0..k {
-                let av = if transa.is_trans() {
-                    a[p * lda + i]
-                } else {
-                    a[i * lda + p]
-                };
-                let bv = if transb.is_trans() {
-                    b[j * ldb + p]
-                } else {
-                    b[p * ldb + j]
-                };
-                sum += av * bv;
+        let crow = i * ldc;
+        // Fold β into this C row once (cache-friendly: each row touched once for scale, then accum).
+        if beta == 0.0 {
+            for j in 0..n {
+                c[crow + j] = 0.0;
             }
-            c[i * ldc + j] += alpha * sum;
+        } else if beta != 1.0 {
+            for j in 0..n {
+                c[crow + j] *= beta;
+            }
+        }
+        for p in 0..k {
+            let av = if transa.is_trans() {
+                a[p * lda + i]
+            } else {
+                a[i * lda + p]
+            };
+            if av == 0.0 {
+                continue;
+            }
+            let aav = alpha * av; // invariant in j → hoisted
+            if !transb.is_trans() {
+                // B row p is contiguous: b[p*ldb + j], j = 0..n. Auto-vectorizes to FMA.
+                let brow = p * ldb;
+                for j in 0..n {
+                    c[crow + j] += aav * b[brow + j];
+                }
+            } else {
+                // op(B)[p][j] = b[j*ldb + p] (strided gather — rare for small; still correct).
+                for j in 0..n {
+                    c[crow + j] += aav * b[j * ldb + p];
+                }
+            }
         }
     }
 }

@@ -37,25 +37,36 @@ impl Module for Linear {
     fn forward(&self, input: &Tensor) -> Tensor {
         let in_shape = input.shape();
         let out_features = self.weight.shape()[0];
-        let weight_t = self.weight.transpose();
 
+        // Fused path: a single `Op::Linear` (x·Wᵀ + b) replaces the old `weight.transpose()` (which
+        // copied the whole weight matrix) + `matmul` + `add(bias)` — one graph node, zero weight
+        // copy. This is the single biggest per-step saving for small, layer-heavy models.
         if in_shape.len() <= 2 {
-            // Standard 2D path: [batch, in] @ [in, out] = [batch, out].
-            let mut res = input.matmul(&weight_t);
             if let Some(ref b) = self.bias {
-                res = res.add(b); // broadcast [out] over [batch, out]
+                return crate::tensor::Tensor::linear_layer(
+                    input,
+                    &self.weight,
+                    b,
+                    crate::tensor::FusedAct::Identity,
+                );
             }
-            res
+            // No-bias fallback (rare): still needs the explicit transpose.
+            input.matmul(&self.weight.transpose())
         } else {
             // N-D path (e.g. [batch, seq, in]): flatten leading dims, apply, restore shape.
-            // This makes Linear apply to the last dimension of any tensor (like PyTorch).
             let in_features = in_shape[in_shape.len() - 1];
             let leading = in_shape[..in_shape.len() - 1].iter().product::<usize>();
             let flat = input.reshape(&[leading, in_features]);
-            let mut res = flat.matmul(&weight_t); // [leading, out]
-            if let Some(ref b) = self.bias {
-                res = res.add(b);
-            }
+            let res = if let Some(ref b) = self.bias {
+                crate::tensor::Tensor::linear_layer(
+                    &flat,
+                    &self.weight,
+                    b,
+                    crate::tensor::FusedAct::Identity,
+                )
+            } else {
+                flat.matmul(&self.weight.transpose())
+            };
             let mut out_shape = in_shape.clone();
             out_shape[in_shape.len() - 1] = out_features;
             res.reshape(&out_shape)
