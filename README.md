@@ -24,6 +24,12 @@ and [`rayon`](https://crates.io/crates/rayon).
   `BCEWithLogitsLoss`, `L1Loss`, `HuberLoss`.
 - **Attention**: an exact, memory-efficient **FlashAttention** implementation (online-softmax
   tiling, O(seq) memory, no materialized N×N matrix, fully differentiable).
+- **Linear attention** (`src/linear_attention.rs`): an **O(N·d²) alternative to FlashAttention**
+  that replaces the softmax kernel with a decomposable feature map φ, so the KV state
+  `S = Σ φ(k)⊗v` is built once (a single `φ(K)ᵀ·V` GEMM) and reused for every query. No N×N matrix
+  in compute **or** memory. Two kernels (ELU+1, ReLU²), causal & non-causal, fully differentiable,
+  and routed through the BLAS `sgemm`. Measured **~24×–162× faster than FlashAttention** at
+  seq 128–1024 (the gap widens with N, since it is O(N) not O(N²)).
 - **Mamba**: full (`Mamba`) and hybrid (`HybridMamba`) Selective State Space Models (S6) with
   input-dependent selective scan, causal conv1d, and SiLU gating — linear O(seq) complexity.
 - **Diffusion**: a full **DDPM** pipeline (forward/reverse process, sinusoidal timestep
@@ -512,6 +518,25 @@ cargo test
   WebGPU/WGPU execution path remains on the roadmap.
 
 ## Changelog
+
+### 1.2.0 — Linear attention: an O(N) alternative to FlashAttention
+
+- **Linear (kernelized) attention** (`src/linear_attention.rs`) — a genuinely fast alternative to
+  FlashAttention for long sequences. It replaces the softmax kernel `exp(q·k)` with a decomposable
+  non-negative feature map φ, then reorders via the associative trick:
+  `out = φ(Q)·(Σ φ(k)⊗v) / (φ(Q)·(Σ φ(k)))`. The KV state is built **once** with a single
+  `φ(K)ᵀ·V` GEMM and reused for every query, so work is **O(N·d²)** — linear in sequence length —
+  with no N×N matrix in compute or memory.
+  - Two kernels: [`KernelKind::Elu`] (ELU+1, Katharopoulos 2020) and [`KernelKind::Relu2`] (ReLU²).
+  - Both **non-causal** (bidirectional — the fast path, one parallel GEMM) and **causal**
+    (autoregressive, via the running recurrence).
+  - A **fused autograd op** (`Op::LinearAttention`) with an exact O(N·d²) backward — verified by
+    central-difference gradient checks. All matmuls route through the BLAS `sgemm`.
+- **Measured speedup vs FlashAttention** (batch 2, d 64, release build):
+  seq 128 → **~24×**, seq 512 → **~81×**, seq 1024 → **~162×**. The gap widens with N because
+  linear attention is O(N) where FlashAttention is O(N²).
+- 7 new tests (forward vs an O(N²) reference for each kernel/mask, central-difference grad checks,
+  end-to-end autograd). 330 tests pass, 0 clippy warnings, `cargo fmt` clean.
 
 ### 1.1.0 — From-scratch BLAS backend + gradient-flow overhaul
 
