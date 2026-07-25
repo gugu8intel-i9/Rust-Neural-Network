@@ -1,9 +1,9 @@
 //! Training utilities and abstractions.
 
-use crate::tensor::Tensor;
+use crate::loss::Loss;
 use crate::nn::Module;
 use crate::optim::Optimizer;
-use crate::loss::Loss;
+use crate::tensor::Tensor;
 
 pub struct SimpleDataLoader {
     inputs: Vec<Tensor>,
@@ -22,18 +22,34 @@ impl SimpleDataLoader {
         let n_samples = inputs.shape()[0];
         let mut input_list = Vec::new();
         let mut target_list = Vec::new();
-        
+
         for i in 0..n_samples {
             // Slice the input and target tensors
-            let input_slice = inputs.data().index_axis(ndarray::Axis(0), i).to_owned().into_dyn();
-            let target_slice = targets.data().index_axis(ndarray::Axis(0), i).to_owned().into_dyn();
-            
+            let input_slice = inputs
+                .data()
+                .index_axis(ndarray::Axis(0), i)
+                .to_owned()
+                .into_dyn();
+            let target_slice = targets
+                .data()
+                .index_axis(ndarray::Axis(0), i)
+                .to_owned()
+                .into_dyn();
+
             input_list.push(Tensor::new(input_slice, false));
             target_list.push(Tensor::new(target_slice, false));
         }
 
-        let input_feature_dim = if n_samples > 0 { input_list[0].len() } else { 0 };
-        let target_feature_dim = if n_samples > 0 { target_list[0].len() } else { 0 };
+        let input_feature_dim = if n_samples > 0 {
+            input_list[0].len()
+        } else {
+            0
+        };
+        let target_feature_dim = if n_samples > 0 {
+            target_list[0].len()
+        } else {
+            0
+        };
         SimpleDataLoader {
             inputs: input_list,
             targets: target_list,
@@ -61,8 +77,10 @@ impl Iterator for SimpleDataLoader {
         // Reuse pre-allocated buffers — avoid per-sample Vec allocation.
         self.input_batch_buf.clear();
         self.target_batch_buf.clear();
-        self.input_batch_buf.reserve(batch_len * self.input_feature_dim);
-        self.target_batch_buf.reserve(batch_len * self.target_feature_dim);
+        self.input_batch_buf
+            .reserve(batch_len * self.input_feature_dim);
+        self.target_batch_buf
+            .reserve(batch_len * self.target_feature_dim);
 
         for i in self.current_index..end {
             let idata = self.inputs[i].data();
@@ -76,16 +94,15 @@ impl Iterator for SimpleDataLoader {
         let inputs = ndarray::ArrayD::from_shape_vec(
             ndarray::IxDyn(&[batch_len, self.input_feature_dim]),
             std::mem::take(&mut self.input_batch_buf),
-        ).unwrap();
+        )
+        .unwrap();
         let targets = ndarray::ArrayD::from_shape_vec(
             ndarray::IxDyn(&[batch_len, self.target_feature_dim]),
             std::mem::take(&mut self.target_batch_buf),
-        ).unwrap();
+        )
+        .unwrap();
 
-        Some((
-            Tensor::new(inputs, false),
-            Tensor::new(targets, false),
-        ))
+        Some((Tensor::new(inputs, false), Tensor::new(targets, false)))
     }
 }
 
@@ -112,10 +129,10 @@ impl<O: Optimizer, L: Loss> Trainer<O, L> {
 
         for (inputs, targets) in &mut loader {
             self.optimizer.zero_grad();
-            
+
             let outputs = self.model.forward(&inputs);
             let loss = self.loss_fn.forward(&outputs, &targets);
-            
+
             loss.backward();
             self.optimizer.step();
 

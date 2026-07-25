@@ -42,107 +42,111 @@
 //! - **Loss Functions**: MSE, Cross-Entropy
 //! - **Training Utilities**: Data loaders and trainers
 
-pub mod error;
-pub mod tensor;
 pub mod activations;
-pub mod nn;
-pub mod optim;
-pub mod loss;
-pub mod train;
-pub mod reasoning;
-pub mod quant;
-pub mod mamba;
+pub mod blas;
+pub mod compression;
+pub mod data;
 pub mod diffusion;
+pub mod distill;
+pub mod distributed;
+pub mod error;
+pub mod finetune;
+pub mod fused;
+pub mod gpu;
+pub mod gpu_kernels;
+pub mod grpo;
+pub mod gui;
+pub mod int8;
+pub mod interactive;
+pub mod looped_transformer;
+pub mod loss;
+pub mod mamba;
+pub mod nn;
+pub mod offload;
+pub mod optim;
+pub mod position;
+pub mod quant;
+pub mod quantize;
+pub mod reasoning;
 pub mod rl;
 pub mod self_improve;
-pub mod looped_transformer;
-pub mod tokenizer;
-pub mod position;
 pub mod serialize;
-pub mod gpu;
 pub mod simd;
-pub mod data;
-pub mod interactive;
-pub mod gpu_kernels;
-pub mod distributed;
-pub mod int8;
-pub mod fused;
-pub mod offload;
-pub mod finetune;
-pub mod quantize;
+pub mod tensor;
 pub mod ternary;
-pub mod distill;
-pub mod grpo;
-pub mod compression;
-pub mod gui;
+pub mod tokenizer;
+pub mod train;
 
 // Re-export main types for convenient access
-pub use error::{RustNnError, Result};
-pub use tensor::Tensor;
-pub use activations::{relu, sigmoid, tanh, softmax, gelu};
-pub use nn::{
-    Module, Sequential, Linear, ReLU, Sigmoid, Tanh, Softmax, GELU, Flatten, Dropout,
-    BatchNorm1D, LayerNorm, NormalMoE, FineGrainedMoE, Recursive, RNNCell, FakeQuantize, CSA, HCA,
-    attention, flash_attention,
+pub use activations::{gelu, relu, sigmoid, softmax, tanh};
+pub use blas::{
+    gemm_strassen, matmul as blas_matmul, saxpy, scopy, sdot, sgemm, sgemv, snrm2, sscal,
+    BlasBackend, NativeBackend, Transpose, GEMM_STRASSEN_THRESHOLD,
 };
-pub use reasoning::{SwiReasoning, MarkovianRSA, ChainOfThought, TreeOfThoughts};
-pub use optim::{Optimizer, SGD, Adam, RMSprop, Muon};
-pub use loss::{Loss, MSELoss, CrossEntropyLoss, BCELoss, BCEWithLogitsLoss, L1Loss, HuberLoss};
-pub use train::{SimpleDataLoader, Trainer};
-pub use quant::{Rotor, RotorQuant};
-pub use mamba::{MambaBlock, Mamba, HybridMamba};
-pub use diffusion::{NoiseSchedule, DenoiseNet, DDPM, ScheduleType, sinusoidal_embedding};
-pub use looped_transformer::{LoopedTransformer, Transformer, TransformerBlock, MultiHeadAttention};
-pub use tokenizer::{BpeTokenizer, MergeScoring};
-pub use position::{RoPE, CARoPE, AlibiBias, SinusoidalPE, LearnedPE, PositionalEncoding};
-pub use serialize::{serialize, deserialize, save_model, load_model, save_model_named, safetensors_export, safetensors_import};
-pub use gpu::{gpu_matmul, gpu_add, gpu_mul, has_gpu, GpuBackend};
-pub use simd::{simd_matmul, simd_add, simd_mul, simd_relu, simd_scale, simd_sum, simd_features};
-pub use data::{
-    Dataset, Column, Credentials, DatasetBuilder, DatasetListing,
-    load_csv, load_tsv, load_jsonl, load_huggingface, load_kaggle,
-    load_huggingface_auth, load_kaggle_auth,
-    search_huggingface, search_kaggle, format_listings,
-    make_classification, make_regression,
-};
-pub use interactive::{run_repl, Session};
-pub use gpu_kernels::{
-    GpuBackendKind, TileConfig, kernel_matmul, kernel_matmul_with_backend,
-    detect_backend, active_backend, set_backend, kernel_source, extract_kernels,
-    backend_report, NVIDIA_PTX_KERNEL, APPLE_MSL_KERNEL, AMD_HIP_KERNEL,
-};
-pub use int8::{Int8Weights, Int8Linear};
-pub use fused::{fused_linear, FusedActivation, sparse_topk_route};
 pub use compression::{
-    SharedWeights, SparseMatrix, LayerDropper, KnowledgeTransfer,
-    CompressedEmbedding, MixedSparsity, ProgressiveShrinking,
-    StructuredPruner, CompressionRecipe, CompressionStrategy, automl_search,
+    automl_search, CompressedEmbedding, CompressionRecipe, CompressionStrategy, KnowledgeTransfer,
+    LayerDropper, MixedSparsity, ProgressiveShrinking, SharedWeights, SparseMatrix,
+    StructuredPruner,
+};
+pub use data::{
+    format_listings, load_csv, load_huggingface, load_huggingface_auth, load_jsonl, load_kaggle,
+    load_kaggle_auth, load_tsv, make_classification, make_regression, search_huggingface,
+    search_kaggle, Column, Credentials, Dataset, DatasetBuilder, DatasetListing,
+};
+pub use diffusion::{sinusoidal_embedding, DenoiseNet, NoiseSchedule, ScheduleType, DDPM};
+pub use distill::{DistillConfig, DistillResult, Distiller, ProgressiveDistiller};
+pub use distributed::{
+    average_gradients, clip_gradients, flatten_gradients, recv_message, ring_all_reduce_simulated,
+    send_message, sync_gradients, unflatten_gradients, DistributedConfig, DistributedWorker,
+    Message, MessageType,
+};
+pub use error::{Result, RustNnError};
+pub use finetune::{FastTrainConfig, FastTrainer, LoraAdapter, LrSchedule, TrainPoint};
+pub use fused::{fused_linear, sparse_topk_route, FusedActivation};
+pub use gpu::{gpu_add, gpu_matmul, gpu_mul, has_gpu, GpuBackend};
+pub use gpu_kernels::{
+    active_backend, backend_report, detect_backend, extract_kernels, kernel_matmul,
+    kernel_matmul_with_backend, kernel_source, set_backend, GpuBackendKind, TileConfig,
+    AMD_HIP_KERNEL, APPLE_MSL_KERNEL, NVIDIA_PTX_KERNEL,
 };
 pub use grpo::{
-    GrpoConfig, GrpoGroup, GrpoTrainer, GrpoStats,
-    RewardModel, RewardScore, RewardWeights, RewardDimension,
-    CoEvolutionTrainer, CoEvolutionStats, AdversarialEpisode,
-    RepoGraph, FileNode, StructureEdge, StructureEdgeType, parse_rust_file,
+    parse_rust_file, AdversarialEpisode, CoEvolutionStats, CoEvolutionTrainer, FileNode,
+    GrpoConfig, GrpoGroup, GrpoStats, GrpoTrainer, RepoGraph, RewardDimension, RewardModel,
+    RewardScore, RewardWeights, StructureEdge, StructureEdgeType,
 };
-pub use distill::{Distiller, DistillConfig, DistillResult, ProgressiveDistiller};
-pub use ternary::{TernaryTensor, TernaryLinear, TernaryModel, ternarize};
-pub use quantize::{QuantFormat, QuantizedTensor, QuantizedModel, QuantizedLinear, quantize};
-pub use finetune::{LoraAdapter, LrSchedule, FastTrainer, FastTrainConfig, TrainPoint};
-pub use offload::{
-    MemoryTier, OffloadConfig, TieredStore, TieredTensor, SsdTensor, OffloadModel,
+pub use gui::{full_dashboard, launch, tensor_heatmap_html, ModelDashboard, TrainingDashboard};
+pub use int8::{Int8Linear, Int8Weights};
+pub use interactive::{run_repl, Session};
+pub use looped_transformer::{
+    LoopedTransformer, MultiHeadAttention, Transformer, TransformerBlock,
 };
-pub use distributed::{
-    DistributedConfig, DistributedWorker, Message, MessageType,
-    ring_all_reduce_simulated, average_gradients, flatten_gradients,
-    unflatten_gradients, sync_gradients, clip_gradients,
-    send_message, recv_message,
+pub use loss::{BCELoss, BCEWithLogitsLoss, CrossEntropyLoss, HuberLoss, L1Loss, Loss, MSELoss};
+pub use mamba::{HybridMamba, Mamba, MambaBlock};
+pub use nn::{
+    attention, flash_attention, BatchNorm1D, Dropout, FakeQuantize, FineGrainedMoE, Flatten,
+    LayerNorm, Linear, Module, NormalMoE, RNNCell, ReLU, Recursive, Sequential, Sigmoid, Softmax,
+    Tanh, CSA, GELU, HCA,
 };
-pub use gui::{ModelDashboard, TrainingDashboard, tensor_heatmap_html, launch, full_dashboard};
+pub use offload::{MemoryTier, OffloadConfig, OffloadModel, SsdTensor, TieredStore, TieredTensor};
+pub use optim::{Adam, Muon, Optimizer, RMSprop, SGD};
+pub use position::{AlibiBias, CARoPE, LearnedPE, PositionalEncoding, RoPE, SinusoidalPE};
+pub use quant::{Rotor, RotorQuant};
+pub use quantize::{quantize, QuantFormat, QuantizedLinear, QuantizedModel, QuantizedTensor};
+pub use reasoning::{ChainOfThought, MarkovianRSA, SwiReasoning, TreeOfThoughts};
 pub use rl::{
-    Environment, Reinforce, ActorCritic, Dqn, Ppo, ReplayBuffer, Transition,
-    BanditEnv, ChainEnv, sample_categorical, discounted_returns,
+    discounted_returns, sample_categorical, ActorCritic, BanditEnv, ChainEnv, Dqn, Environment,
+    Ppo, Reinforce, ReplayBuffer, Transition,
 };
 pub use self_improve::{Critic, SelfImprover};
+pub use serialize::{
+    deserialize, load_model, safetensors_export, safetensors_import, save_model, save_model_named,
+    serialize,
+};
+pub use simd::{simd_add, simd_features, simd_matmul, simd_mul, simd_relu, simd_scale, simd_sum};
+pub use tensor::Tensor;
+pub use ternary::{ternarize, TernaryLinear, TernaryModel, TernaryTensor};
+pub use tokenizer::{BpeTokenizer, MergeScoring};
+pub use train::{SimpleDataLoader, Trainer};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

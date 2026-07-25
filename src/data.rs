@@ -104,7 +104,10 @@ impl Dataset {
         let mut data = Vec::with_capacity(nrows * ncols);
         for row in 0..nrows {
             for col_name in column_names {
-                let val = self.get_float(col_name).map(|c| c.get(row).copied().unwrap_or(0.0)).unwrap_or(0.0);
+                let val = self
+                    .get_float(col_name)
+                    .map(|c| c.get(row).copied().unwrap_or(0.0))
+                    .unwrap_or(0.0);
                 data.push(val);
             }
         }
@@ -112,7 +115,12 @@ impl Dataset {
     }
 
     /// Convert text columns into token-id tensors using a tokenizer.
-    pub fn to_token_tensor(&self, column_name: &str, tokenizer: &BpeTokenizer, max_len: usize) -> Tensor {
+    pub fn to_token_tensor(
+        &self,
+        column_name: &str,
+        tokenizer: &BpeTokenizer,
+        max_len: usize,
+    ) -> Tensor {
         let text = self.get_text(column_name).unwrap_or(&[]);
         let nrows = text.len();
         let mut data = Vec::with_capacity(nrows * max_len);
@@ -187,13 +195,15 @@ impl Dataset {
 /// Load a CSV or TSV file into a Dataset. The delimiter is auto-detected (',' for CSV, '\t' for TSV).
 /// The first line is treated as a header. Numeric columns are inferred; non-numeric are text.
 pub fn load_csv(path: &str) -> Result<Dataset, String> {
-    let content = std::fs::read_to_string(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
     parse_delimited(&content, ',')
 }
 
 /// Load a TSV file.
 pub fn load_tsv(path: &str) -> Result<Dataset, String> {
-    let content = std::fs::read_to_string(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
     parse_delimited(&content, '\t')
 }
 
@@ -253,7 +263,8 @@ fn parse_csv_line(line: &str, delimiter: char) -> Vec<String> {
 
 /// Load a JSONL file (one JSON object per line) into a Dataset.
 pub fn load_jsonl(path: &str) -> Result<Dataset, String> {
-    let content = std::fs::read_to_string(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
     let mut dataset = Dataset::new("jsonl");
     let mut col_data: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -265,7 +276,10 @@ pub fn load_jsonl(path: &str) -> Result<Dataset, String> {
     }
 
     for (key, values) in col_data {
-        let floats: Option<Vec<f32>> = values.iter().map(|s| s.trim().parse::<f32>().ok()).collect();
+        let floats: Option<Vec<f32>> = values
+            .iter()
+            .map(|s| s.trim().parse::<f32>().ok())
+            .collect();
         if let Some(floats) = floats {
             dataset.add_float_column(&key, floats);
         } else {
@@ -483,19 +497,26 @@ fn extract_rows_from_hf_json(body: &str) -> Vec<HashMap<String, String>> {
 
 fn dataset_to_cache_json(ds: &Dataset) -> String {
     let mut s = String::new();
-    s.push_str(&format!("{{\"source\":\"{}\",\"num_rows\":{},\"columns\":{{", ds.source, ds.num_rows));
+    s.push_str(&format!(
+        "{{\"source\":\"{}\",\"num_rows\":{},\"columns\":{{",
+        ds.source, ds.num_rows
+    ));
     let mut first = true;
     let mut names: Vec<&String> = ds.columns.keys().collect();
     names.sort();
     for name in names {
-        if !first { s.push(','); }
+        if !first {
+            s.push(',');
+        }
         first = false;
         s.push_str(&format!("\"{name}\":{{"));
         match &ds.columns[name] {
             Column::Float(v) => {
                 s.push_str("\"type\":\"float\",\"values\":[");
                 for (i, val) in v.iter().enumerate() {
-                    if i > 0 { s.push(','); }
+                    if i > 0 {
+                        s.push(',');
+                    }
                     s.push_str(&val.to_string());
                 }
                 s.push(']');
@@ -503,7 +524,9 @@ fn dataset_to_cache_json(ds: &Dataset) -> String {
             Column::Text(v) => {
                 s.push_str("\"type\":\"text\",\"values\":[");
                 for (i, val) in v.iter().enumerate() {
-                    if i > 0 { s.push(','); }
+                    if i > 0 {
+                        s.push(',');
+                    }
                     s.push_str(&format!("\"{}\"", val.replace('"', "\\\"")));
                 }
                 s.push(']');
@@ -541,7 +564,10 @@ fn extract_float_array(s: &str) -> Vec<f32> {
     let start = s.find('[').map(|p| p + 1).unwrap_or(0);
     let end = s.rfind(']').unwrap_or(s.len());
     let inner = &s[start..end];
-    inner.split(',').filter_map(|n| n.trim().parse().ok()).collect()
+    inner
+        .split(',')
+        .filter_map(|n| n.trim().parse().ok())
+        .collect()
 }
 
 // ==================== Kaggle loading ====================
@@ -558,8 +584,7 @@ fn extract_float_array(s: &str) -> Vec<f32> {
 pub fn load_kaggle(dataset: &str, file: &str) -> Result<Dataset, String> {
     let username = std::env::var("KAGGLE_USERNAME")
         .map_err(|_| "KAGGLE_USERNAME not set. Get your API key from kaggle.com -> Account -> Create New Token".to_string())?;
-    let key = std::env::var("KAGGLE_KEY")
-        .map_err(|_| "KAGGLE_KEY not set".to_string())?;
+    let key = std::env::var("KAGGLE_KEY").map_err(|_| "KAGGLE_KEY not set".to_string())?;
 
     let url = format!("https://www.kaggle.com/api/v1/datasets/download/{dataset}");
     let agent = ureq::Agent::new();
@@ -567,7 +592,10 @@ pub fn load_kaggle(dataset: &str, file: &str) -> Result<Dataset, String> {
     // Download the zip archive.
     let response = agent
         .get(&url)
-        .set("Authorization", &format!("Basic {}", base64_encode(&format!("{username}:{key}"))))
+        .set(
+            "Authorization",
+            &format!("Basic {}", base64_encode(&format!("{username}:{key}"))),
+        )
         .call()
         .map_err(|e| format!("Kaggle download failed: {e}"))?;
 
@@ -622,7 +650,9 @@ pub fn make_classification(n_samples: usize, n_features: usize, n_classes: usize
     let mut rng = rand::thread_rng();
     let mut ds = Dataset::new("synthetic");
 
-    let mut features: Vec<Vec<f32>> = (0..n_features).map(|_| Vec::with_capacity(n_samples)).collect();
+    let mut features: Vec<Vec<f32>> = (0..n_features)
+        .map(|_| Vec::with_capacity(n_samples))
+        .collect();
     let mut labels = Vec::with_capacity(n_samples);
 
     for i in 0..n_samples {
@@ -649,14 +679,25 @@ pub fn make_regression(n_samples: usize, n_features: usize) -> Dataset {
     let mut ds = Dataset::new("synthetic");
 
     // Random true weights.
-    let true_w: Vec<f32> = (0..n_features).map(|_| rng.gen::<f32>() * 2.0 - 1.0).collect();
+    let true_w: Vec<f32> = (0..n_features)
+        .map(|_| rng.gen::<f32>() * 2.0 - 1.0)
+        .collect();
 
-    let mut features: Vec<Vec<f32>> = (0..n_features).map(|_| Vec::with_capacity(n_samples)).collect();
+    let mut features: Vec<Vec<f32>> = (0..n_features)
+        .map(|_| Vec::with_capacity(n_samples))
+        .collect();
     let mut targets = Vec::with_capacity(n_samples);
 
     for _ in 0..n_samples {
-        let x: Vec<f32> = (0..n_features).map(|_| rng.gen::<f32>() * 2.0 - 1.0).collect();
-        let y: f32 = x.iter().zip(true_w.iter()).map(|(xi, wi)| xi * wi).sum::<f32>() + (rng.gen::<f32>() - 0.5) * 0.1;
+        let x: Vec<f32> = (0..n_features)
+            .map(|_| rng.gen::<f32>() * 2.0 - 1.0)
+            .collect();
+        let y: f32 = x
+            .iter()
+            .zip(true_w.iter())
+            .map(|(xi, wi)| xi * wi)
+            .sum::<f32>()
+            + (rng.gen::<f32>() - 0.5) * 0.1;
         targets.push(y);
         for (j, &xi) in x.iter().enumerate() {
             features[j].push(xi);
@@ -815,7 +856,11 @@ impl Credentials {
             .ok();
         let kaggle_username = std::env::var("KAGGLE_USERNAME").ok();
         let kaggle_key = std::env::var("KAGGLE_KEY").ok();
-        Credentials { hf_token, kaggle_username, kaggle_key }
+        Credentials {
+            hf_token,
+            kaggle_username,
+            kaggle_key,
+        }
     }
 
     /// Set HuggingFace token.
@@ -832,10 +877,14 @@ impl Credentials {
     }
 
     /// Check if HuggingFace authentication is available.
-    pub fn has_hf(&self) -> bool { self.hf_token.is_some() }
+    pub fn has_hf(&self) -> bool {
+        self.hf_token.is_some()
+    }
 
     /// Check if Kaggle authentication is available.
-    pub fn has_kaggle(&self) -> bool { self.kaggle_username.is_some() && self.kaggle_key.is_some() }
+    pub fn has_kaggle(&self) -> bool {
+        self.kaggle_username.is_some() && self.kaggle_key.is_some()
+    }
 
     /// Save credentials to `~/.rust-nn/credentials.toml` for persistence across sessions.
     pub fn save(&self) -> std::io::Result<()> {
@@ -843,7 +892,9 @@ impl Credentials {
         let dir = format!("{home}/.rust-nn");
         std::fs::create_dir_all(&dir)?;
         let mut content = String::new();
-        if let Some(ref t) = self.hf_token { content.push_str(&format!("[huggingface]\ntoken = \"{t}\"\n")); }
+        if let Some(ref t) = self.hf_token {
+            content.push_str(&format!("[huggingface]\ntoken = \"{t}\"\n"));
+        }
         if let (Some(u), Some(k)) = (&self.kaggle_username, &self.kaggle_key) {
             content.push_str(&format!("[kaggle]\nusername = \"{u}\"\nkey = \"{k}\"\n"));
         }
@@ -860,14 +911,24 @@ impl Credentials {
             for line in content.lines() {
                 let line = line.trim();
                 if line.starts_with('[') && line.ends_with(']') {
-                    section = &line[1..line.len()-1];
+                    section = &line[1..line.len() - 1];
                 } else if let Some(eq) = line.find('=') {
                     let key = line[..eq].trim();
-                    let val = line[eq+1..].trim().trim_matches('"');
+                    let val = line[eq + 1..].trim().trim_matches('"');
                     match (section, key) {
-                        ("huggingface", "token") => { if creds.hf_token.is_none() { creds.hf_token = Some(val.into()); } }
-                        ("kaggle", "username") => { if creds.kaggle_username.is_none() { creds.kaggle_username = Some(val.into()); } }
-                        ("kaggle", "key") if creds.kaggle_key.is_none() => { creds.kaggle_key = Some(val.into()); }
+                        ("huggingface", "token") => {
+                            if creds.hf_token.is_none() {
+                                creds.hf_token = Some(val.into());
+                            }
+                        }
+                        ("kaggle", "username") => {
+                            if creds.kaggle_username.is_none() {
+                                creds.kaggle_username = Some(val.into());
+                            }
+                        }
+                        ("kaggle", "key") if creds.kaggle_key.is_none() => {
+                            creds.kaggle_key = Some(val.into());
+                        }
                         _ => {}
                     }
                 }
@@ -892,7 +953,11 @@ pub struct DatasetListing {
 ///
 /// Uses the HuggingFace Hub REST API to search for datasets by keyword.
 /// Returns up to `limit` results.
-pub fn search_huggingface(query: &str, limit: usize, creds: &Credentials) -> Result<Vec<DatasetListing>, String> {
+pub fn search_huggingface(
+    query: &str,
+    limit: usize,
+    creds: &Credentials,
+) -> Result<Vec<DatasetListing>, String> {
     let agent = ureq::Agent::new();
     let url = format!("https://huggingface.co/api/datasets?search={query}&limit={limit}");
     let mut req = agent.get(&url);
@@ -900,13 +965,18 @@ pub fn search_huggingface(query: &str, limit: usize, creds: &Credentials) -> Res
         req = req.set("Authorization", &format!("Bearer {token}"));
     }
     let response = req.call().map_err(|e| format!("HF search failed: {e}"))?;
-    let body = response.into_string().map_err(|e| format!("Read error: {e}"))?;
+    let body = response
+        .into_string()
+        .map_err(|e| format!("Read error: {e}"))?;
 
     // Parse the JSON array response (lightweight parser).
     let mut listings = Vec::new();
     // Find each object in the array
     let trimmed = body.trim();
-    let inner = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(trimmed);
+    let inner = trimmed
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(trimmed);
     for obj_str in split_json_objects(inner) {
         let pairs = parse_simple_json_object(&obj_str);
         let mut id = String::new();
@@ -928,7 +998,9 @@ pub fn search_huggingface(query: &str, limit: usize, creds: &Credentials) -> Res
                 tags: Vec::new(),
             });
         }
-        if listings.len() >= limit { break; }
+        if listings.len() >= limit {
+            break;
+        }
     }
     Ok(listings)
 }
@@ -937,19 +1009,35 @@ pub fn search_huggingface(query: &str, limit: usize, creds: &Credentials) -> Res
 ///
 /// Uses the Kaggle API to list datasets matching a search query.
 /// Requires Kaggle credentials.
-pub fn search_kaggle(query: &str, limit: usize, creds: &Credentials) -> Result<Vec<DatasetListing>, String> {
-    let username = creds.kaggle_username.as_ref().ok_or("Kaggle credentials required. Set KAGGLE_USERNAME and KAGGLE_KEY.")?;
+pub fn search_kaggle(
+    query: &str,
+    limit: usize,
+    creds: &Credentials,
+) -> Result<Vec<DatasetListing>, String> {
+    let username = creds
+        .kaggle_username
+        .as_ref()
+        .ok_or("Kaggle credentials required. Set KAGGLE_USERNAME and KAGGLE_KEY.")?;
     let key = creds.kaggle_key.as_ref().ok_or("Kaggle key required.")?;
     let agent = ureq::Agent::new();
     let url = format!("https://www.kaggle.com/api/v1/datasets/list?search={query}&page=1");
     let response = agent
         .get(&url)
-        .set("Authorization", &format!("Basic {}", base64_encode(&format!("{username}:{key}"))))
+        .set(
+            "Authorization",
+            &format!("Basic {}", base64_encode(&format!("{username}:{key}"))),
+        )
         .call()
         .map_err(|e| format!("Kaggle search failed: {e}"))?;
-    let body = response.into_string().map_err(|e| format!("Read error: {e}"))?;
+    let body = response
+        .into_string()
+        .map_err(|e| format!("Read error: {e}"))?;
     let mut listings = Vec::new();
-    let inner = body.trim().strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(&body);
+    let inner = body
+        .trim()
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(&body);
     for obj_str in split_json_objects(inner) {
         let pairs = parse_simple_json_object(&obj_str);
         let mut id = String::new();
@@ -964,22 +1052,35 @@ pub fn search_kaggle(query: &str, limit: usize, creds: &Credentials) -> Result<V
             }
         }
         if !id.is_empty() {
-            listings.push(DatasetListing { id, description: desc, downloads, tags: Vec::new() });
+            listings.push(DatasetListing {
+                id,
+                description: desc,
+                downloads,
+                tags: Vec::new(),
+            });
         }
-        if listings.len() >= limit { break; }
+        if listings.len() >= limit {
+            break;
+        }
     }
     Ok(listings)
 }
 
 /// Format dataset listings as a readable table.
 pub fn format_listings(listings: &[DatasetListing]) -> String {
-    if listings.is_empty() { return "No datasets found.".into(); }
+    if listings.is_empty() {
+        return "No datasets found.".into();
+    }
     let mut out = String::new();
     out.push_str(&format!("Found {} datasets:\n\n", listings.len()));
     for (i, ds) in listings.iter().enumerate() {
         out.push_str(&format!("  {}. {}\n", i + 1, ds.id));
         if !ds.description.is_empty() {
-            let desc = if ds.description.len() > 80 { &ds.description[..80] } else { &ds.description };
+            let desc = if ds.description.len() > 80 {
+                &ds.description[..80]
+            } else {
+                &ds.description
+            };
             out.push_str(&format!("     {desc}...\n"));
         }
         if ds.downloads > 0 {
@@ -998,7 +1099,9 @@ fn split_json_objects(body: &str) -> Vec<String> {
     for (i, ch) in body.char_indices() {
         match ch {
             '{' => {
-                if depth == 0 { start = Some(i); }
+                if depth == 0 {
+                    start = Some(i);
+                }
                 depth += 1;
             }
             '}' => {
@@ -1052,17 +1155,29 @@ impl DatasetBuilder {
     /// Add a row of float features with a float label.
     pub fn add_float_row(mut self, features: &[f32], label: f32) -> Self {
         for (i, &val) in features.iter().enumerate() {
-            self.float_columns.entry(format!("f{i}")).or_default().push(val);
+            self.float_columns
+                .entry(format!("f{i}"))
+                .or_default()
+                .push(val);
         }
-        self.float_columns.entry("label".into()).or_default().push(label);
+        self.float_columns
+            .entry("label".into())
+            .or_default()
+            .push(label);
         self.num_rows += 1;
         self
     }
 
     /// Add a row of text features with a text label.
     pub fn add_text_row(mut self, text: &str, label: &str) -> Self {
-        self.text_columns.entry("text".into()).or_default().push(text.into());
-        self.text_columns.entry("label".into()).or_default().push(label.into());
+        self.text_columns
+            .entry("text".into())
+            .or_default()
+            .push(text.into());
+        self.text_columns
+            .entry("label".into())
+            .or_default()
+            .push(label.into());
         self.num_rows += 1;
         self
     }
@@ -1109,7 +1224,10 @@ impl DatasetBuilder {
                 if let Some(col) = self.float_columns.get(*h) {
                     fields.push(col.get(row).copied().unwrap_or(0.0).to_string());
                 } else if let Some(col) = self.text_columns.get(*h) {
-                    fields.push(format!("\"{}\"", col.get(row).map(|s| s.as_str()).unwrap_or("")));
+                    fields.push(format!(
+                        "\"{}\"",
+                        col.get(row).map(|s| s.as_str()).unwrap_or("")
+                    ));
                 }
             }
             content.push_str(&fields.join(","));
@@ -1130,25 +1248,31 @@ pub fn load_huggingface_auth(
 }
 
 /// Load a Kaggle dataset with credentials (downloads CSV file).
-pub fn load_kaggle_auth(
-    dataset: &str,
-    file: &str,
-    creds: &Credentials,
-) -> Result<Dataset, String> {
-    let username = creds.kaggle_username.as_ref().ok_or("Kaggle username required")?;
+pub fn load_kaggle_auth(dataset: &str, file: &str, creds: &Credentials) -> Result<Dataset, String> {
+    let username = creds
+        .kaggle_username
+        .as_ref()
+        .ok_or("Kaggle username required")?;
     let key = creds.kaggle_key.as_ref().ok_or("Kaggle key required")?;
     let url = format!("https://www.kaggle.com/api/v1/datasets/download/{dataset}");
     let agent = ureq::Agent::new();
     let response = agent
         .get(&url)
-        .set("Authorization", &format!("Basic {}", base64_encode(&format!("{username}:{key}"))))
+        .set(
+            "Authorization",
+            &format!("Basic {}", base64_encode(&format!("{username}:{key}"))),
+        )
         .call()
         .map_err(|e| format!("Kaggle download failed: {e}"))?;
-    let body = response.into_string().map_err(|e| format!("Read error: {e}"))?;
+    let body = response
+        .into_string()
+        .map_err(|e| format!("Read error: {e}"))?;
     if file.ends_with(".csv") {
         parse_delimited(&body, ',')
     } else {
-        Err(format!("File '{file}' needs ZIP extraction. Extract manually and use load_csv()."))
+        Err(format!(
+            "File '{file}' needs ZIP extraction. Extract manually and use load_csv()."
+        ))
     }
 }
 
@@ -1219,7 +1343,11 @@ mod tests_creds {
     #[test]
     fn split_json_objects_basic() {
         let json = r#"[{"id":"a","x":1},{"id":"b","x":2}]"#;
-        let inner = json.trim().strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap();
+        let inner = json
+            .trim()
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap();
         let objs = split_json_objects(inner);
         assert_eq!(objs.len(), 2);
         assert!(objs[0].contains("\"a\""));
@@ -1227,9 +1355,12 @@ mod tests_creds {
 
     #[test]
     fn format_listings_display() {
-        let listings = vec![
-            DatasetListing { id: "test/ds1".into(), description: "Test dataset".into(), downloads: 42, tags: vec![] },
-        ];
+        let listings = vec![DatasetListing {
+            id: "test/ds1".into(),
+            description: "Test dataset".into(),
+            downloads: 42,
+            tags: vec![],
+        }];
         let formatted = format_listings(&listings);
         assert!(formatted.contains("test/ds1"));
         assert!(formatted.contains("42"));

@@ -16,9 +16,9 @@
 
 use crate::tensor::Tensor;
 use ndarray::{ArrayD, IxDyn};
+use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
-use rand::rngs::StdRng;
 
 /// Multivector component layout for Cl(3,0): `[1, e1, e2, e3, e12, e13, e23, e123]`.
 type MV = [f32; 8];
@@ -46,12 +46,22 @@ impl Rotor {
         let theta: f32 = rng.gen_range(0.0..std::f32::consts::PI);
         if norm < 1e-8 {
             // Degenerate: identity rotor.
-            return Rotor { s: 1.0, p12: 0.0, p13: 0.0, p23: 0.0 };
+            return Rotor {
+                s: 1.0,
+                p12: 0.0,
+                p13: 0.0,
+                p23: 0.0,
+            };
         }
         let (ua, ub, uc) = (a / norm, b / norm, c / norm);
         let s = (theta / 2.0).cos();
         let mag = (theta / 2.0).sin();
-        Rotor { s, p12: mag * ua, p13: mag * ub, p23: mag * uc }
+        Rotor {
+            s,
+            p12: mag * ua,
+            p13: mag * ub,
+            p23: mag * uc,
+        }
     }
 
     /// Sparse geometric product `r = rotor * x` (28 FMAs vs 64 for the full table), from the
@@ -95,7 +105,11 @@ impl Rotor {
         let r1 = self.sandwich(e1);
         let r2 = self.sandwich(e2);
         let r3 = self.sandwich(e3);
-        [[r1[1], r2[1], r3[1]], [r1[2], r2[2], r3[2]], [r1[3], r2[3], r3[3]]]
+        [
+            [r1[1], r2[1], r3[1]],
+            [r1[2], r2[2], r3[2]],
+            [r1[3], r2[3], r3[3]],
+        ]
     }
 }
 
@@ -124,7 +138,12 @@ impl RotorQuant {
         let n_groups = padded_dim / 3;
         let mut rng = StdRng::seed_from_u64(0xC11F_C0DE_u64);
         let rotors = (0..n_groups).map(|_| Rotor::random(&mut rng)).collect();
-        RotorQuant { dim, bits, rotors, padded_dim }
+        RotorQuant {
+            dim,
+            bits,
+            rotors,
+            padded_dim,
+        }
     }
 
     /// Create with a custom RNG seed.
@@ -134,7 +153,12 @@ impl RotorQuant {
         let n_groups = padded_dim / 3;
         let mut rng = StdRng::seed_from_u64(seed);
         let rotors = (0..n_groups).map(|_| Rotor::random(&mut rng)).collect();
-        RotorQuant { dim, bits, rotors, padded_dim }
+        RotorQuant {
+            dim,
+            bits,
+            rotors,
+            padded_dim,
+        }
     }
 
     fn qmax(&self) -> f32 {
@@ -257,7 +281,10 @@ mod tests {
         let y = r.sandwich(x);
         let x_rec = r.inv_sandwich(y);
         for i in 0..8 {
-            assert!((x[i] - x_rec[i]).abs() < 1e-5, "sandwich inverse failed at {i}");
+            assert!(
+                (x[i] - x_rec[i]).abs() < 1e-5,
+                "sandwich inverse failed at {i}"
+            );
         }
     }
 
@@ -276,7 +303,10 @@ mod tests {
         // 4-bit per-group quant: error should be a small fraction of the value range.
         let range = data.iter().copied().fold(-f32::INFINITY, f32::max)
             - data.iter().copied().fold(f32::INFINITY, f32::min);
-        assert!(max_err < 0.15 * range, "quantization error too large: {max_err} (range {range})");
+        assert!(
+            max_err < 0.15 * range,
+            "quantization error too large: {max_err} (range {range})"
+        );
     }
 
     #[test]

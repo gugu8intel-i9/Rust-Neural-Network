@@ -20,7 +20,7 @@
 //!   - **Residual connections** across every loop for gradient flow.
 //!   - Optional **adaptive halting** (ACT-style) for input-dependent compute depth.
 
-use crate::nn::{GELU, LayerNorm, Linear, Module, Sequential};
+use crate::nn::{LayerNorm, Linear, Module, Sequential, GELU};
 use crate::tensor::Tensor;
 use std::sync::Arc;
 
@@ -82,7 +82,10 @@ impl MultiHeadAttention {
 impl Module for MultiHeadAttention {
     fn forward(&self, input: &Tensor) -> Tensor {
         let shape = input.shape();
-        assert!(shape.len() == 3, "MultiHeadAttention expects [batch, seq, d_model]");
+        assert!(
+            shape.len() == 3,
+            "MultiHeadAttention expects [batch, seq, d_model]"
+        );
         let (batch, seq, _) = (shape[0], shape[1], shape[2]);
 
         let q = self.split_heads(&self.q_proj.forward(input), batch, seq);
@@ -265,7 +268,8 @@ impl LoopedTransformer {
 
                 // Halting probability (inference-only; non-differentiable decision).
                 let halt_logit = self.halt_unit.forward(&h);
-                let p = 1.0 / (1.0 + (-halt_logit.data().iter().copied().next().unwrap_or(0.0)).exp());
+                let p =
+                    1.0 / (1.0 + (-halt_logit.data().iter().copied().next().unwrap_or(0.0)).exp());
                 cumulative += p;
                 if cumulative >= self.halt_threshold {
                     loops_used = t + 1;

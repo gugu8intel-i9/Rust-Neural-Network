@@ -99,7 +99,14 @@ impl RoPE {
     pub fn with_base(head_dim: usize, max_seq_len: usize, base: f32) -> Self {
         let inv_f = inv_freq(head_dim, base);
         let (cos, sin) = build_tables(&inv_f, max_seq_len);
-        RoPE { head_dim, max_seq_len, base, cos, sin, scale: 1.0 }
+        RoPE {
+            head_dim,
+            max_seq_len,
+            base,
+            cos,
+            sin,
+            scale: 1.0,
+        }
     }
 
     /// Create a RoPE with **YaRN** NTK-aware scaling for context extension.
@@ -107,7 +114,14 @@ impl RoPE {
     pub fn yarn(head_dim: usize, max_seq_len: usize, base: f32, scale: f32) -> Self {
         let inv_f = inv_freq_yarn(head_dim, base, scale);
         let (cos, sin) = build_tables(&inv_f, max_seq_len);
-        RoPE { head_dim, max_seq_len, base, cos, sin, scale }
+        RoPE {
+            head_dim,
+            max_seq_len,
+            base,
+            cos,
+            sin,
+            scale,
+        }
     }
 
     /// Apply rotary embeddings to a tensor of shape `[..., seq, head_dim]`.
@@ -120,7 +134,11 @@ impl RoPE {
             shape.last().copied().unwrap_or(0),
             self.head_dim
         );
-        let seq = if shape.len() >= 2 { shape[shape.len() - 2] } else { 1 };
+        let seq = if shape.len() >= 2 {
+            shape[shape.len() - 2]
+        } else {
+            1
+        };
         assert!(
             seq <= self.max_seq_len,
             "RoPE: seq len {seq} exceeds max_seq_len {}. Call with a larger max_seq_len or use YaRN scaling.",
@@ -219,7 +237,11 @@ impl CARoPE {
         } else {
             1
         };
-        assert!(seq <= self.max_seq_len, "CARoPE: seq {seq} exceeds max {0}", self.max_seq_len);
+        assert!(
+            seq <= self.max_seq_len,
+            "CARoPE: seq {seq} exceeds max {0}",
+            self.max_seq_len
+        );
 
         let half = self.head_dim / 2;
         let dim = self.head_dim;
@@ -322,7 +344,9 @@ impl AlibiBias {
 /// starting from `2^(-8/n)` for `n` heads, decreasing.
 fn alibi_slopes(n: usize) -> Vec<f32> {
     // From the paper: m_h = 2^(-8h/n) for h = 1..n. Strictly decreasing.
-    (1..=n).map(|h| 2f32.powf(-8.0 * h as f32 / n as f32)).collect()
+    (1..=n)
+        .map(|h| 2f32.powf(-8.0 * h as f32 / n as f32))
+        .collect()
 }
 
 // ==================== Additive (absolute) position encodings ====================
@@ -354,17 +378,31 @@ impl SinusoidalPE {
             }
         }
         let table = Tensor::from_vec(table, vec![max_seq_len, dim]);
-        SinusoidalPE { dim, max_seq_len, table }
+        SinusoidalPE {
+            dim,
+            max_seq_len,
+            table,
+        }
     }
 
     /// Add position embeddings to `x` of shape `[batch, seq, dim]`.
     pub fn apply(&self, x: &Tensor) -> Tensor {
         let shape = x.shape();
         assert!(!shape.is_empty() && *shape.last().unwrap() == self.dim);
-        let seq = if shape.len() >= 2 { shape[shape.len() - 2] } else { 1 };
+        let seq = if shape.len() >= 2 {
+            shape[shape.len() - 2]
+        } else {
+            1
+        };
         assert!(seq <= self.max_seq_len);
         // Extract the first 'seq' rows of the table.
-        let td: Vec<f32> = self.table.data().iter().copied().take(seq * self.dim).collect();
+        let td: Vec<f32> = self
+            .table
+            .data()
+            .iter()
+            .copied()
+            .take(seq * self.dim)
+            .collect();
         let pe = Tensor::new(
             ArrayD::from_shape_vec(IxDyn(&[seq, self.dim]), td).unwrap(),
             false,
@@ -393,7 +431,11 @@ impl LearnedPE {
             ArrayD::from_elem(IxDyn(&[max_seq_len, dim]), 0.0),
             true, // trainable
         );
-        LearnedPE { dim, max_seq_len, table }
+        LearnedPE {
+            dim,
+            max_seq_len,
+            table,
+        }
     }
 
     /// Initialize with sinusoidal values (a good starting point for learned PE).
@@ -407,9 +449,19 @@ impl LearnedPE {
     /// Add position embeddings to `x` of shape `[batch, seq, dim]`.
     pub fn apply(&self, x: &Tensor) -> Tensor {
         let shape = x.shape();
-        let seq = if shape.len() >= 2 { shape[shape.len() - 2] } else { 1 };
+        let seq = if shape.len() >= 2 {
+            shape[shape.len() - 2]
+        } else {
+            1
+        };
         assert!(seq <= self.max_seq_len);
-        let td: Vec<f32> = self.table.data().iter().copied().take(seq * self.dim).collect();
+        let td: Vec<f32> = self
+            .table
+            .data()
+            .iter()
+            .copied()
+            .take(seq * self.dim)
+            .collect();
         let pe = Tensor::new(
             ArrayD::from_shape_vec(IxDyn(&[seq, self.dim]), td).unwrap(),
             true,
@@ -487,7 +539,12 @@ mod tests {
         let yd: Vec<f32> = y.data().iter().copied().collect();
         // At position 0, all angles are 0, so cos=1, sin=0 → identity.
         for i in 0..8 {
-            assert_close(yd[i], [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0][i], 1e-6, "pos 0 identity");
+            assert_close(
+                yd[i],
+                [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0][i],
+                1e-6,
+                "pos 0 identity",
+            );
         }
     }
 
@@ -495,14 +552,20 @@ mod tests {
     fn rope_differentiable() {
         let rope = RoPE::new(8, 16);
         let x = Tensor::new(
-            ArrayD::from_shape_vec(IxDyn(&[1, 8]), vec![0.5, -0.3, 0.8, 0.1, 0.2, -0.4, 0.6, 0.0])
-                .unwrap(),
+            ArrayD::from_shape_vec(
+                IxDyn(&[1, 8]),
+                vec![0.5, -0.3, 0.8, 0.1, 0.2, -0.4, 0.6, 0.0],
+            )
+            .unwrap(),
             true,
         );
         let y = rope.apply(&x);
         y.sum().backward();
         let grad = x.grad().expect("RoPE produced no gradient");
-        assert!(grad.iter().any(|&g| g.abs() > 1e-6), "RoPE gradients should be non-zero");
+        assert!(
+            grad.iter().any(|&g| g.abs() > 1e-6),
+            "RoPE gradients should be non-zero"
+        );
     }
 
     #[test]
@@ -512,7 +575,10 @@ mod tests {
         let base = [0.3, -0.1, 0.5, 0.2, -0.4, 0.6];
         let shape = [1, 6];
 
-        let x = Tensor::new(ArrayD::from_shape_vec(IxDyn(&shape), base.to_vec()).unwrap(), true);
+        let x = Tensor::new(
+            ArrayD::from_shape_vec(IxDyn(&shape), base.to_vec()).unwrap(),
+            true,
+        );
         let y = rope.apply(&x);
         y.sum().backward();
         let analytic: Vec<f32> = x.grad().unwrap().iter().copied().collect();
@@ -592,21 +658,32 @@ mod tests {
         let static_rope = RoPE::new(8, 16);
         let carope = CARoPE::new(8, 16, 16).with_spread(0.5);
         let emb = Tensor::from_vec(vec![1.0; 16 * 2], vec![2, 16]); // [seq=2, dim=16]
-        let x = Tensor::from_vec(vec![1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0,
-                                       1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0], vec![2, 8]);
+        let x = Tensor::from_vec(
+            vec![
+                1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+            ],
+            vec![2, 8],
+        );
         let y_static = static_rope.apply(&x);
         let y_ca = carope.apply(&x, &emb);
         let sd: Vec<f32> = y_static.data().iter().copied().collect();
         let cd: Vec<f32> = y_ca.data().iter().copied().collect();
         // At position 1+, the context-aware offsets change the angles.
         let any_diff = (8..16).any(|i| (sd[i] - cd[i]).abs() > 1e-4);
-        assert!(any_diff, "CARoPE should differ from static RoPE at pos >= 1 with non-zero embeddings");
+        assert!(
+            any_diff,
+            "CARoPE should differ from static RoPE at pos >= 1 with non-zero embeddings"
+        );
     }
 
     #[test]
     fn carope_has_parameters() {
         let rope = CARoPE::new(16, 32, 64);
-        assert_eq!(rope.parameters().len(), 1, "CARoPE should expose the freq_proj parameter");
+        assert_eq!(
+            rope.parameters().len(),
+            1,
+            "CARoPE should expose the freq_proj parameter"
+        );
     }
 
     // ---- ALiBi ----
@@ -619,7 +696,12 @@ mod tests {
         // Diagonal: distance 0 → bias 0.
         for h in 0..4 {
             for i in 0..seq {
-                assert_close(bias[h * seq * seq + i * seq + i], 0.0, 1e-8, "ALiBi diagonal must be 0");
+                assert_close(
+                    bias[h * seq * seq + i * seq + i],
+                    0.0,
+                    1e-8,
+                    "ALiBi diagonal must be 0",
+                );
             }
         }
     }
@@ -631,7 +713,10 @@ mod tests {
         // bias[0, 0, 7] (far) should be more negative than bias[0, 0, 1] (near).
         let near = bias[1];
         let far = bias[7];
-        assert!(far < near, "ALiBi: farther distance should be more negative");
+        assert!(
+            far < near,
+            "ALiBi: farther distance should be more negative"
+        );
     }
 
     #[test]
@@ -639,7 +724,10 @@ mod tests {
         let slopes = alibi_slopes(8);
         // ALiBi slopes are strictly decreasing: head 0 has the steepest slope.
         for i in 0..7 {
-            assert!(slopes[i] > slopes[i + 1], "ALiBi slopes should be decreasing per head");
+            assert!(
+                slopes[i] > slopes[i + 1],
+                "ALiBi slopes should be decreasing per head"
+            );
         }
         // All slopes should be in (0, 1).
         for &s in &slopes {

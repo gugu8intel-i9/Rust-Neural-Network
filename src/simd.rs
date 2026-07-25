@@ -80,10 +80,15 @@ pub fn simd_matmul(a: &[f32], b: &[f32], c: &mut [f32], m: usize, k: usize, n: u
                     // Strided inner kernel: A has stride k, B has stride n, C has stride n.
                     // Within each row, elements are contiguous (good for SIMD loads).
                     inner_kernel_strided(
-                        &a[ii * k + kk..], k,
-                        &b[kk * n + jj..], n,
-                        &mut c_block[jj..], n,
-                        m_block, k_block, n_block,
+                        &a[ii * k + kk..],
+                        k,
+                        &b[kk * n + jj..],
+                        n,
+                        &mut c_block[jj..],
+                        n,
+                        m_block,
+                        k_block,
+                        n_block,
                     );
                 }
             }
@@ -100,10 +105,15 @@ fn inner_kernel(a: &[f32], b: &[f32], c: &mut [f32], m: usize, k: usize, n: usiz
 /// `lda`/`ldb`/`ldc` are the leading dimensions (row strides) of A, B, C respectively.
 #[allow(clippy::too_many_arguments)]
 fn inner_kernel_strided(
-    a: &[f32], lda: usize,
-    b: &[f32], ldb: usize,
-    c: &mut [f32], ldc: usize,
-    m: usize, k: usize, n: usize,
+    a: &[f32],
+    lda: usize,
+    b: &[f32],
+    ldb: usize,
+    c: &mut [f32],
+    ldc: usize,
+    m: usize,
+    k: usize,
+    n: usize,
 ) {
     #[cfg(target_arch = "x86_64")]
     {
@@ -131,10 +141,15 @@ fn inner_kernel_strided(
 #[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn inner_kernel_avx2_strided(
-    a: &[f32], lda: usize,
-    b: &[f32], ldb: usize,
-    c: &mut [f32], ldc: usize,
-    m: usize, k: usize, n: usize,
+    a: &[f32],
+    lda: usize,
+    b: &[f32],
+    ldb: usize,
+    c: &mut [f32],
+    ldc: usize,
+    m: usize,
+    k: usize,
+    n: usize,
 ) {
     use std::arch::x86_64::*;
 
@@ -171,10 +186,15 @@ unsafe fn inner_kernel_avx2_strided(
 /// Scalar fallback inner kernel (strided).
 #[allow(clippy::too_many_arguments)]
 fn inner_kernel_scalar_strided(
-    a: &[f32], lda: usize,
-    b: &[f32], ldb: usize,
-    c: &mut [f32], ldc: usize,
-    m: usize, k: usize, n: usize,
+    a: &[f32],
+    lda: usize,
+    b: &[f32],
+    ldb: usize,
+    c: &mut [f32],
+    ldc: usize,
+    m: usize,
+    k: usize,
+    n: usize,
 ) {
     for i in 0..m {
         let c_row = &mut c[i * ldc..i * ldc + n];
@@ -431,7 +451,12 @@ mod tests {
         let mut c = vec![0.0; 4];
         simd_matmul(&a, &b, &mut c, 2, 3, 2);
         for i in 0..4 {
-            assert!((c[i] - expected[i]).abs() < 1e-4, "matmul mismatch at {i}: {} vs {}", c[i], expected[i]);
+            assert!(
+                (c[i] - expected[i]).abs() < 1e-4,
+                "matmul mismatch at {i}: {} vs {}",
+                c[i],
+                expected[i]
+            );
         }
     }
 
@@ -467,7 +492,10 @@ mod tests {
         for i in 0..m * n {
             max_diff = max_diff.max((c[i] - expected[i]).abs());
         }
-        assert!(max_diff < 0.5, "blocked matmul mismatch (max diff {max_diff:.2e})");
+        assert!(
+            max_diff < 0.5,
+            "blocked matmul mismatch (max diff {max_diff:.2e})"
+        );
     }
 
     #[test]
@@ -504,7 +532,10 @@ mod tests {
         let b = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0];
         let mut out = vec![0.0; 9];
         simd_add(&a, &b, &mut out);
-        assert_eq!(out, vec![11.0, 22.0, 33.0, 44.0, 55.0, 66.0, 77.0, 88.0, 99.0]);
+        assert_eq!(
+            out,
+            vec![11.0, 22.0, 33.0, 44.0, 55.0, 66.0, 77.0, 88.0, 99.0]
+        );
     }
 
     #[test]

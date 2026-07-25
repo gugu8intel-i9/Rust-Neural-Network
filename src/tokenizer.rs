@@ -554,7 +554,12 @@ fn count_tokens(words: &[Vec<u32>], counts: &[u64]) -> HashMap<u32, u64> {
 
 /// Score a candidate pair `(l, r)` given its co-occurrence count `c_uv` and per-token counts.
 /// Higher is better. PMI and hybrid are normalized so the comparison is well-scaled.
-fn score_pair(pair: (u32, u32), c_uv: u64, token_counts: &HashMap<u32, u64>, scoring: MergeScoring) -> f64 {
+fn score_pair(
+    pair: (u32, u32),
+    c_uv: u64,
+    token_counts: &HashMap<u32, u64>,
+    scoring: MergeScoring,
+) -> f64 {
     let (l, r) = pair;
     let c_uv = c_uv as f64;
     match scoring {
@@ -607,7 +612,11 @@ mod tests {
 
     #[test]
     fn round_trip_ascii() {
-        let tok = BpeTokenizer::train("hello world hello there world hello", 280, MergeScoring::Frequency);
+        let tok = BpeTokenizer::train(
+            "hello world hello there world hello",
+            280,
+            MergeScoring::Frequency,
+        );
         let text = "hello world hello there";
         let ids = tok.encode(text);
         let back = tok.decode(&ids);
@@ -625,7 +634,11 @@ mod tests {
 
     #[test]
     fn round_trip_bytes_exact() {
-        let tok = BpeTokenizer::train("the quick brown fox jumps over the lazy dog", 320, MergeScoring::Frequency);
+        let tok = BpeTokenizer::train(
+            "the quick brown fox jumps over the lazy dog",
+            320,
+            MergeScoring::Frequency,
+        );
         let bytes = b"\xff\xfe\x00\x01 the quick fox";
         let text = String::from_utf8_lossy(bytes);
         let ids = tok.encode(&text);
@@ -647,7 +660,10 @@ mod tests {
         // With merges, "banana banana" should produce fewer tokens than raw bytes.
         let text = "banana banana banana";
         let ids = tok.encode(text);
-        assert!(ids.len() < text.len(), "merges must reduce token count vs raw bytes");
+        assert!(
+            ids.len() < text.len(),
+            "merges must reduce token count vs raw bytes"
+        );
     }
 
     #[test]
@@ -694,7 +710,11 @@ mod tests {
 
     #[test]
     fn encode_with_offsets_aligns() {
-        let tok = BpeTokenizer::train("hello world hello there world", 300, MergeScoring::Frequency);
+        let tok = BpeTokenizer::train(
+            "hello world hello there world",
+            300,
+            MergeScoring::Frequency,
+        );
         let text = "hello world";
         let spans = tok.encode_with_offsets(text);
         // Reconstruct bytes from spans.
@@ -708,7 +728,11 @@ mod tests {
 
     #[test]
     fn batch_encode_decode_parallel() {
-        let tok = BpeTokenizer::train("one two three four five six seven", 300, MergeScoring::Frequency);
+        let tok = BpeTokenizer::train(
+            "one two three four five six seven",
+            300,
+            MergeScoring::Frequency,
+        );
         let texts: Vec<String> = vec!["one two".into(), "three four".into(), "five six".into()];
         let batch = tok.encode_batch(&texts);
         assert_eq!(batch.len(), 3);
@@ -727,16 +751,28 @@ mod tests {
 
     #[test]
     fn save_load_round_trips() {
-        let tok = BpeTokenizer::train("hello world hello there world hello", 290, MergeScoring::Frequency);
+        let tok = BpeTokenizer::train(
+            "hello world hello there world hello",
+            290,
+            MergeScoring::Frequency,
+        );
         let serialized = tok.save();
         let tok2 = BpeTokenizer::load(&serialized);
         let text = "hello world";
-        assert_eq!(tok.encode(text), tok2.encode(text), "loaded tokenizer must encode identically");
+        assert_eq!(
+            tok.encode(text),
+            tok2.encode(text),
+            "loaded tokenizer must encode identically"
+        );
     }
 
     #[test]
     fn special_tokens() {
-        let mut tok = BpeTokenizer::train("hello world hello world hello", 270, MergeScoring::Frequency);
+        let mut tok = BpeTokenizer::train(
+            "hello world hello world hello",
+            270,
+            MergeScoring::Frequency,
+        );
         let base_vs = tok.vocab_size as u32;
         let pad_id = tok.add_special("<pad>");
         let bos_id = tok.add_special("<bos>");

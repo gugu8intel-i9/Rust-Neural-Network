@@ -34,9 +34,9 @@
 //! [`ProgressiveDistiller`] chains multiple distillation rounds: each student becomes the
 //! teacher for the next round, progressively shrinking the model while preserving accuracy.
 
+use crate::loss::{CrossEntropyLoss, Loss};
 use crate::nn::{Linear, Module, ReLU, Sequential};
 use crate::optim::{Adam, Optimizer};
-use crate::loss::{Loss, CrossEntropyLoss};
 use crate::tensor::Tensor;
 use crate::train::SimpleDataLoader;
 use std::sync::Arc;
@@ -85,17 +85,28 @@ impl Default for DistillConfig {
 
 impl DistillConfig {
     /// Set distillation temperature.
-    pub fn with_temperature(mut self, t: f32) -> Self { self.temperature = t; self }
+    pub fn with_temperature(mut self, t: f32) -> Self {
+        self.temperature = t;
+        self
+    }
     /// Set loss weights (alpha=hard, beta=soft, gamma=feature).
     pub fn with_weights(mut self, alpha: f32, beta: f32, gamma: f32) -> Self {
-        self.alpha = alpha; self.beta = beta; self.gamma = gamma; self
+        self.alpha = alpha;
+        self.beta = beta;
+        self.gamma = gamma;
+        self
     }
     /// Auto-generate student with half the width and depth.
     pub fn auto_student(mut self) -> Self {
-        self.student_hidden = 0; self.student_layers = 0; self
+        self.student_hidden = 0;
+        self.student_layers = 0;
+        self
     }
     /// Quantize the student to INT8 after distillation.
-    pub fn quantize(mut self) -> Self { self.quantize_output = true; self }
+    pub fn quantize(mut self) -> Self {
+        self.quantize_output = true;
+        self
+    }
 }
 
 /// Result of a distillation run.
@@ -133,7 +144,9 @@ pub struct Distiller {
 
 impl std::fmt::Debug for Distiller {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Distiller").field("config", &self.config).finish_non_exhaustive()
+        f.debug_struct("Distiller")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
     }
 }
 
@@ -152,7 +165,8 @@ impl Distiller {
     pub fn generate_student(&self, input_dim: usize, output_dim: usize) -> Sequential {
         let params = self.teacher.parameters();
         // Count weight matrices (2D params).
-        let weight_shapes: Vec<(usize, usize)> = params.iter()
+        let weight_shapes: Vec<(usize, usize)> = params
+            .iter()
             .filter(|p| p.ndim() == 2)
             .map(|p| (p.shape()[0], p.shape()[1]))
             .collect();
@@ -173,7 +187,11 @@ impl Distiller {
         let mut model = Sequential::new();
         let mut prev_dim = input_dim;
         for i in 0..student_layers {
-            let out_dim = if i == student_layers - 1 { output_dim } else { student_hidden };
+            let out_dim = if i == student_layers - 1 {
+                output_dim
+            } else {
+                student_hidden
+            };
             model = model.add(Linear::new(prev_dim, out_dim, true));
             if i < student_layers - 1 {
                 model = model.add(ReLU);
@@ -207,7 +225,8 @@ impl Distiller {
         let mut loss_history = Vec::new();
 
         for epoch in 0..self.config.epochs {
-            let loader = SimpleDataLoader::new(inputs.clone(), targets.clone(), self.config.batch_size);
+            let loader =
+                SimpleDataLoader::new(inputs.clone(), targets.clone(), self.config.batch_size);
             let mut epoch_loss = 0.0f32;
             let mut n_batches = 0usize;
 
@@ -232,11 +251,11 @@ impl Distiller {
                 let soft_loss = soft_diff.mul(&soft_diff).sum();
 
                 // Total loss with weights and temperature scaling.
-                let total_loss = hard_loss.mul(&Tensor::from_vec(vec![self.config.alpha], vec![1]))
-                    .add(&soft_loss.mul(&Tensor::from_vec(
-                        vec![self.config.beta * t * t],
-                        vec![1],
-                    )));
+                let total_loss = hard_loss
+                    .mul(&Tensor::from_vec(vec![self.config.alpha], vec![1]))
+                    .add(
+                        &soft_loss.mul(&Tensor::from_vec(vec![self.config.beta * t * t], vec![1])),
+                    );
 
                 total_loss.backward();
                 optimizer.step();
@@ -246,7 +265,11 @@ impl Distiller {
                 n_batches += 1;
             }
 
-            let avg_loss = if n_batches > 0 { epoch_loss / n_batches as f32 } else { 0.0 };
+            let avg_loss = if n_batches > 0 {
+                epoch_loss / n_batches as f32
+            } else {
+                0.0
+            };
             loss_history.push(avg_loss);
 
             if (epoch + 1) % 5 == 0 || epoch == 0 {
@@ -356,7 +379,10 @@ fn compute_accuracy(model: &dyn Module, inputs: &Tensor, targets: &Tensor) -> f3
             // One-hot encoding: find the index with value 1.0.
             let mut tc = 0;
             for j in 0..c {
-                if tgt_data[[i, j]] > 0.5 { tc = j; break; }
+                if tgt_data[[i, j]] > 0.5 {
+                    tc = j;
+                    break;
+                }
             }
             tc
         } else {
@@ -376,20 +402,26 @@ fn compute_accuracy(model: &dyn Module, inputs: &Tensor, targets: &Tensor) -> f3
 fn softmax_temp(logits: &Tensor, temperature: f32) -> Tensor {
     let data = logits.data();
     let shape = data.shape();
-    if shape.len() < 2 { return logits.clone(); }
+    if shape.len() < 2 {
+        return logits.clone();
+    }
     let (n, c) = (shape[0], shape[1]);
 
     let mut out = vec![0.0f32; n * c];
     for i in 0..n {
         let mut max_val = f32::NEG_INFINITY;
-        for j in 0..c { max_val = max_val.max(data[[i, j]] / temperature); }
+        for j in 0..c {
+            max_val = max_val.max(data[[i, j]] / temperature);
+        }
         let mut sum = 0.0f32;
         for j in 0..c {
             out[i * c + j] = ((data[[i, j]] / temperature) - max_val).exp();
             sum += out[i * c + j];
         }
         let inv = if sum > 0.0 { 1.0 / sum } else { 0.0 };
-        for j in 0..c { out[i * c + j] *= inv; }
+        for j in 0..c {
+            out[i * c + j] *= inv;
+        }
     }
 
     Tensor::new(
@@ -416,7 +448,6 @@ impl RepeatRows for Tensor {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,7 +471,12 @@ mod tests {
 
         let teacher_params: usize = (*teacher).parameters().iter().map(|t| t.len()).sum();
         let student_params: usize = student.parameters().iter().map(|t| t.len()).sum();
-        assert!(student_params < teacher_params, "student should be smaller: {} vs {}", student_params, teacher_params);
+        assert!(
+            student_params < teacher_params,
+            "student should be smaller: {} vs {}",
+            student_params,
+            teacher_params
+        );
     }
 
     #[test]
@@ -467,7 +503,9 @@ mod tests {
         let n = 64;
         let inputs = Tensor::randn(&[n, 8]);
         let mut onehot = vec![0.0f32; n * 4];
-        for i in 0..n { onehot[i * 4 + (i % 4)] = 1.0; }
+        for i in 0..n {
+            onehot[i * 4 + (i % 4)] = 1.0;
+        }
         let targets = Tensor::from_vec(onehot, vec![n, 4]);
 
         let config = DistillConfig {
@@ -480,7 +518,10 @@ mod tests {
         let mut distiller = Distiller::new(teacher, config);
         let result = distiller.distill(&inputs, &targets, 8, 4);
 
-        assert!(result.compression_ratio > 1.0, "student should be compressed");
+        assert!(
+            result.compression_ratio > 1.0,
+            "student should be compressed"
+        );
         assert!(!result.loss_history.is_empty(), "should have loss history");
     }
 
@@ -490,7 +531,11 @@ mod tests {
         let probs = softmax_temp(&logits, 2.0);
         let p: Vec<f32> = probs.data().iter().copied().collect();
         let row0_sum = p[0] + p[1] + p[2];
-        assert!((row0_sum - 1.0).abs() < 1e-5, "softmax row should sum to 1: {}", row0_sum);
+        assert!(
+            (row0_sum - 1.0).abs() < 1e-5,
+            "softmax row should sum to 1: {}",
+            row0_sum
+        );
     }
 
     #[test]
@@ -499,7 +544,10 @@ mod tests {
         let model = Sequential::new().add(Linear::new(4, 3, true));
         let inputs = Tensor::randn(&[4, 4]);
         // One-hot targets matching argmax of random model (won't be perfect, but should be [0,1]).
-        let targets = Tensor::from_vec(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], vec![4, 3]);
+        let targets = Tensor::from_vec(
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            vec![4, 3],
+        );
         let acc = compute_accuracy(&model, &inputs, &targets);
         assert!((0.0..=1.0).contains(&acc));
     }
@@ -515,10 +563,17 @@ mod tests {
 
         let inputs = Tensor::randn(&[32, 8]);
         let mut oh = vec![0.0f32; 32 * 4];
-        for i in 0..32 { oh[i * 4 + (i % 4)] = 1.0; }
+        for i in 0..32 {
+            oh[i * 4 + (i % 4)] = 1.0;
+        }
         let targets = Tensor::from_vec(oh, vec![32, 4]);
 
-        let config = DistillConfig { epochs: 3, batch_size: 16, lr: 0.01, ..Default::default() };
+        let config = DistillConfig {
+            epochs: 3,
+            batch_size: 16,
+            lr: 0.01,
+            ..Default::default()
+        };
         let prog = ProgressiveDistiller::new(config, 2);
         let results = prog.distill(teacher, &inputs, &targets, 8, 4);
         assert_eq!(results.len(), 2, "should have 2 rounds");
@@ -536,7 +591,11 @@ mod tests {
         let inputs = Tensor::randn(&[16, 8]);
         let targets = Tensor::from_vec(vec![1.0, 0.0, 0.0, 0.0], vec![1, 4]).repeat_rows(16);
 
-        let config = DistillConfig { epochs: 2, batch_size: 8, ..Default::default() };
+        let config = DistillConfig {
+            epochs: 2,
+            batch_size: 8,
+            ..Default::default()
+        };
         let mut distiller = Distiller::new(teacher, config);
         let result = distiller.distill(&inputs, &targets, 8, 4);
 

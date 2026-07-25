@@ -4,7 +4,9 @@
 //! fix (bias gradients) plus a tiny XOR training run are exercised.
 
 use ndarray::{ArrayD, IxDyn};
-use rust_nn::loss::{BCELoss, BCEWithLogitsLoss, CrossEntropyLoss, HuberLoss, L1Loss, Loss, MSELoss};
+use rust_nn::loss::{
+    BCELoss, BCEWithLogitsLoss, CrossEntropyLoss, HuberLoss, L1Loss, Loss, MSELoss,
+};
 use rust_nn::nn::{Linear, Module, ReLU, Sequential};
 use rust_nn::optim::{Adam, Optimizer};
 use rust_nn::tensor::Tensor;
@@ -36,13 +38,26 @@ fn check(name: &str, base: &[f32], shape: &[usize], loss_fn: impl Fn(&Tensor) ->
         let mut lo = base.to_vec();
         hi[i] += eps;
         lo[i] -= eps;
-        let l_hi = loss_fn(&leaf(&hi, shape)).data().iter().copied().next().unwrap();
-        let l_lo = loss_fn(&leaf(&lo, shape)).data().iter().copied().next().unwrap();
+        let l_hi = loss_fn(&leaf(&hi, shape))
+            .data()
+            .iter()
+            .copied()
+            .next()
+            .unwrap();
+        let l_lo = loss_fn(&leaf(&lo, shape))
+            .data()
+            .iter()
+            .copied()
+            .next()
+            .unwrap();
         let num = (l_hi - l_lo) / (2.0 * eps);
         max_diff = max_diff.max((num - analytic[i]).abs());
     }
     println!("{name:<18}: max |analytic - numeric| = {max_diff:.2e}");
-    assert!(max_diff < 1e-2, "{name}: gradient mismatch (max diff {max_diff:.2e})");
+    assert!(
+        max_diff < 1e-2,
+        "{name}: gradient mismatch (max diff {max_diff:.2e})"
+    );
 }
 
 #[test]
@@ -65,7 +80,9 @@ fn cross_entropy_gradient_matches_numeric() {
 fn bce_with_logits_gradient_matches_numeric() {
     let logits = vec![0.9, -0.4, 0.2, 1.1];
     let target = leaf(&[1.0, 0.0, 1.0, 0.0], &[4]);
-    check("BCEWithLogits", &logits, &[4], |p| BCEWithLogitsLoss.forward(p, &target));
+    check("BCEWithLogits", &logits, &[4], |p| {
+        BCEWithLogitsLoss.forward(p, &target)
+    });
 }
 
 #[test]
@@ -86,7 +103,9 @@ fn l1_gradient_matches_numeric() {
 fn huber_gradient_matches_numeric() {
     let pred = [0.3, -0.7, 1.2, -0.1];
     let target = leaf(&[0.0, 1.0, -1.0, 0.5], &[4]);
-    check("HuberLoss", &pred, &[4], |p| HuberLoss::default().forward(p, &target));
+    check("HuberLoss", &pred, &[4], |p| {
+        HuberLoss::default().forward(p, &target)
+    });
 }
 
 #[test]
@@ -111,7 +130,12 @@ fn bias_gradient_uses_unbroadcast() {
 
     let bias = layer.bias.as_ref().expect("bias should exist");
     let grad = bias.grad().expect("bias grad missing");
-    assert_eq!(grad.shape(), &[4], "bias grad must be [out], got {:?}", grad.shape());
+    assert_eq!(
+        grad.shape(),
+        &[4],
+        "bias grad must be [out], got {:?}",
+        grad.shape()
+    );
 
     let params = layer.parameters();
     let mut opt = Adam::new(params, 0.01);
@@ -146,6 +170,9 @@ fn xor_learns() {
         last = loss;
     }
     println!("XOR loss: first={first:.4} last={last:.4}");
-    assert!(last < first, "loss should decrease ({last:.4} >= {first:.4})");
+    assert!(
+        last < first,
+        "loss should decrease ({last:.4} >= {first:.4})"
+    );
     assert!(last < 0.1, "XOR should converge below 0.1, got {last:.4}");
 }

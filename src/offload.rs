@@ -144,14 +144,22 @@ impl SsdTensor {
         let bytes = buf.len();
         std::fs::write(&path, &buf)?;
 
-        Ok(SsdTensor { path, shape, numel, bytes })
+        Ok(SsdTensor {
+            path,
+            shape,
+            numel,
+            bytes,
+        })
     }
 
     /// Load the tensor from SSD into RAM.
     pub fn load(&self) -> std::io::Result<Tensor> {
         let raw = std::fs::read(&self.path)?;
         if raw.len() < 4 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "file too short"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "file too short",
+            ));
         }
         let ndim = u32::from_le_bytes(raw[0..4].try_into().unwrap()) as usize;
         let mut offset = 4;
@@ -295,7 +303,10 @@ impl std::fmt::Debug for TieredStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TieredStore")
             .field("ram_usage_mb", &(self.ram_usage / 1024 / 1024))
-            .field("ram_budget_mb", &(self.config.ram_budget_bytes / 1024 / 1024))
+            .field(
+                "ram_budget_mb",
+                &(self.config.ram_budget_bytes / 1024 / 1024),
+            )
             .field("num_tensors", &self.tensors.len())
             .finish()
     }
@@ -316,7 +327,8 @@ impl TieredStore {
     pub fn insert(&mut self, name: impl Into<String>, tensor: Tensor) {
         let size = tensor.len() * 4;
         self.ram_usage += size;
-        self.tensors.insert(name.into(), TieredTensor::from_tensor(tensor));
+        self.tensors
+            .insert(name.into(), TieredTensor::from_tensor(tensor));
         self.maybe_evict();
     }
 
@@ -498,7 +510,7 @@ impl OffloadModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nn::{Linear, Sequential, ReLU};
+    use crate::nn::{Linear, ReLU, Sequential};
 
     fn tmp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rust_nn_test_{}", std::process::id()));
@@ -563,7 +575,10 @@ mod tests {
         store.insert("b", Tensor::from_vec(vec![2.0; 20], vec![20])); // 80 bytes — should evict "a"
 
         let (ram, ssd) = store.tier_counts();
-        assert!(ssd >= 1, "at least 1 tensor should be on SSD, got RAM:{ram} SSD:{ssd}");
+        assert!(
+            ssd >= 1,
+            "at least 1 tensor should be on SSD, got RAM:{ram} SSD:{ssd}"
+        );
         assert!(store.ram_usage() <= 120, "RAM should be under budget");
     }
 

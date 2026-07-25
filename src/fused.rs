@@ -4,8 +4,8 @@
 //! (matmul output, bias broadcast add, activation output). The fused kernel does all three
 //! in one pass over the output buffer, eliminating 2 temporary allocations.
 
-use crate::tensor::Tensor;
 use crate::simd;
+use crate::tensor::Tensor;
 use ndarray::{ArrayD, IxDyn};
 
 /// Fused activation functions.
@@ -53,12 +53,14 @@ pub fn fused_linear(
     }
 
     // Step 2: Fused bias + activation in one pass (no intermediate allocation).
-    let _bias_data: &[f32] = bias.map(|b| {
-        // Return a reference — but since we can't return a ref from a closure easily,
-        // we handle it inline.
-        let _ = b;
-        &[][..]
-    }).unwrap_or(&[]);
+    let _bias_data: &[f32] = bias
+        .map(|b| {
+            // Return a reference — but since we can't return a ref from a closure easily,
+            // we handle it inline.
+            let _ = b;
+            &[][..]
+        })
+        .unwrap_or(&[]);
     // Actually just do it inline.
     if let Some(b) = bias {
         let b_data: Vec<f32> = b.data().iter().copied().collect();
@@ -84,7 +86,8 @@ pub fn fused_linear(
                 for i in 0..batch {
                     for o in 0..out_f {
                         let v = c[i * out_f + o] + b_data[o];
-                        c[i * out_f + o] = 0.5 * v * (1.0 + (c0 * (v + 0.044715 * v * v * v)).tanh());
+                        c[i * out_f + o] =
+                            0.5 * v * (1.0 + (c0 * (v + 0.044715 * v * v * v)).tanh());
                     }
                 }
             }
@@ -92,7 +95,12 @@ pub fn fused_linear(
                 for i in 0..batch {
                     for o in 0..out_f {
                         let v = c[i * out_f + o] + b_data[o];
-                        c[i * out_f + o] = if v >= 0.0 { 1.0 / (1.0 + (-v).exp()) } else { let e = v.exp(); e / (1.0 + e) };
+                        c[i * out_f + o] = if v >= 0.0 {
+                            1.0 / (1.0 + (-v).exp())
+                        } else {
+                            let e = v.exp();
+                            e / (1.0 + e)
+                        };
                     }
                 }
             }
@@ -112,7 +120,12 @@ pub fn fused_linear(
             }
             FusedActivation::Sigmoid => {
                 for v in c.iter_mut() {
-                    *v = if *v >= 0.0 { 1.0 / (1.0 + (-*v).exp()) } else { let e = (*v).exp(); e / (1.0 + e) };
+                    *v = if *v >= 0.0 {
+                        1.0 / (1.0 + (-*v).exp())
+                    } else {
+                        let e = (*v).exp();
+                        e / (1.0 + e)
+                    };
                 }
             }
         }
@@ -141,14 +154,15 @@ pub fn sparse_topk_route(
     for b in 0..batch {
         let logits = &gating_logits[b * num_experts..(b + 1) * num_experts];
         // Partial sort: find top-k indices.
-        let mut ranked: Vec<(usize, f32)> = (0..num_experts)
-            .map(|i| (i, logits[i]))
-            .collect();
+        let mut ranked: Vec<(usize, f32)> = (0..num_experts).map(|i| (i, logits[i])).collect();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // Softmax over top-k logits.
         let topk: Vec<(usize, f32)> = ranked.iter().take(k).cloned().collect();
-        let max_logit = topk.iter().map(|(_, v)| *v).fold(f32::NEG_INFINITY, f32::max);
+        let max_logit = topk
+            .iter()
+            .map(|(_, v)| *v)
+            .fold(f32::NEG_INFINITY, f32::max);
         let mut exp_sum = 0.0f32;
         let mut exp_vals = vec![0.0f32; k];
         for (j, (_, val)) in topk.iter().enumerate() {
@@ -158,7 +172,11 @@ pub fn sparse_topk_route(
 
         for j in 0..k {
             indices[b * k + j] = topk[j].0;
-            weights[b * k + j] = if exp_sum > 0.0 { exp_vals[j] / exp_sum } else { 0.0 };
+            weights[b * k + j] = if exp_sum > 0.0 {
+                exp_vals[j] / exp_sum
+            } else {
+                0.0
+            };
         }
     }
 
@@ -182,7 +200,10 @@ mod tests {
         let fused_vals: Vec<f32> = fused.data().iter().copied().collect();
         let _none_vals: Vec<f32> = none.data().iter().copied().collect();
         assert_eq!(fused_vals.len(), 4);
-        assert!(fused_vals.iter().all(|v| *v >= 0.0), "ReLU should be non-negative");
+        assert!(
+            fused_vals.iter().all(|v| *v >= 0.0),
+            "ReLU should be non-negative"
+        );
     }
 
     #[test]
@@ -202,25 +223,33 @@ mod tests {
         let result = fused_linear(&x, &w, None, FusedActivation::GELU);
         let vals: Vec<f32> = result.data().iter().copied().collect();
         // GELU(0) = 0, GELU(1) ≈ 0.841, GELU(-1) ≈ -0.159, GELU(2) ≈ 1.954
-        assert!(vals[0].abs() < 0.01, "GELU(0) should be ~0, got {}", vals[0]);
-        assert!(vals[1] > 0.8 && vals[1] < 0.85, "GELU(1) should be ~0.84, got {}", vals[1]);
+        assert!(
+            vals[0].abs() < 0.01,
+            "GELU(0) should be ~0, got {}",
+            vals[0]
+        );
+        assert!(
+            vals[1] > 0.8 && vals[1] < 0.85,
+            "GELU(1) should be ~0.84, got {}",
+            vals[1]
+        );
     }
 
     #[test]
     fn sparse_topk_correct() {
         // 3 samples, 4 experts, top-2.
         let logits = vec![
-            1.0, 3.0, 2.0, 0.0,  // sample 0: best = [1, 2]
-            0.0, 0.5, 4.0, 1.0,  // sample 1: best = [2, 3]
+            1.0, 3.0, 2.0, 0.0, // sample 0: best = [1, 2]
+            0.0, 0.5, 4.0, 1.0, // sample 1: best = [2, 3]
         ];
         let (indices, weights) = sparse_topk_route(&logits, 2, 4, 2);
         // Sample 0: top-2 = expert 1 (logit 3.0) and expert 2 (logit 2.0).
         assert_eq!(indices[0], 1); // expert 1
         assert_eq!(indices[1], 2); // expert 2
-        // Sample 1: top-2 = expert 2 (logit 4.0) and expert 3 (logit 1.0).
+                                   // Sample 1: top-2 = expert 2 (logit 4.0) and expert 3 (logit 1.0).
         assert_eq!(indices[2], 2); // expert 2
         assert_eq!(indices[3], 3); // expert 3
-        // Weights should sum to 1.0 per sample.
+                                   // Weights should sum to 1.0 per sample.
         let w0: f32 = weights[0] + weights[1];
         assert!((w0 - 1.0).abs() < 1e-5, "weights should sum to 1: {w0}");
     }

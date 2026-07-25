@@ -110,7 +110,10 @@ pub fn save_model_named(model: &dyn Module, names: &[String]) -> Vec<u8> {
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            let name = names.get(i).cloned().unwrap_or_else(|| format!("param_{i}"));
+            let name = names
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("param_{i}"));
             (leak_str(name), t)
         })
         .collect();
@@ -156,12 +159,7 @@ pub fn safetensors_export(named: &[(&str, &Tensor)]) -> Vec<u8> {
         data_section.extend_from_slice(&raw);
         let end = data_section.len();
         let shape: Vec<u64> = tensor.shape().iter().map(|&d| d as u64).collect();
-        entries.push((
-            name.to_string(),
-            "F32".to_string(),
-            shape,
-            [start, end],
-        ));
+        entries.push((name.to_string(), "F32".to_string(), shape, [start, end]));
     }
 
     // Build JSON header.
@@ -172,7 +170,11 @@ pub fn safetensors_export(named: &[(&str, &Tensor)]) -> Vec<u8> {
         }
         json.push_str(&format!(
             "\"{name}\":{{\"dtype\":\"{dtype}\",\"shape\":[{}],\"data_offsets\":[{},{}]}}",
-            shape.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(","),
+            shape
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
             offsets[0],
             offsets[1]
         ));
@@ -212,7 +214,11 @@ pub fn safetensors_import(bytes: &[u8]) -> Result<Vec<(String, Tensor)>, String>
         let shape: Vec<usize> = obj
             .get("shape")
             .and_then(|s| s.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_int().map(|i| i as usize)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_int().map(|i| i as usize))
+                    .collect()
+            })
             .unwrap_or_default();
         let offsets = obj
             .get("data_offsets")
@@ -227,7 +233,11 @@ pub fn safetensors_import(bytes: &[u8]) -> Result<Vec<(String, Tensor)>, String>
             .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
             .collect();
 
-        let shape_ref: Vec<usize> = if shape.is_empty() { vec![1] } else { shape.clone() };
+        let shape_ref: Vec<usize> = if shape.is_empty() {
+            vec![1]
+        } else {
+            shape.clone()
+        };
         let tensor = Tensor::new(
             ArrayD::from_shape_vec(IxDyn(&shape_ref), data)
                 .map_err(|e| format!("shape error: {e}"))?,
@@ -408,14 +418,17 @@ mod serde_json_compat {
                 break;
             }
         }
-        s.parse::<i64>().ok().map(Value::Int).or_else(|| s.parse::<f64>().ok().map(|_| Value::Int(0)))
+        s.parse::<i64>()
+            .ok()
+            .map(Value::Int)
+            .or_else(|| s.parse::<f64>().ok().map(|_| Value::Int(0)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nn::{Linear, Module, Sequential, ReLU};
+    use crate::nn::{Linear, Module, ReLU, Sequential};
 
     #[test]
     fn serialize_deserialize_roundtrip() {

@@ -96,7 +96,11 @@ impl Reinforce {
             .add(Linear::new(obs_dim, hidden_dim, true))
             .add(Tanh)
             .add(Linear::new(hidden_dim, n_actions, true));
-        Reinforce { policy, gamma: 0.99, baseline: 0.0 }
+        Reinforce {
+            policy,
+            gamma: 0.99,
+            baseline: 0.0,
+        }
     }
 
     /// Sample an action from the current policy given an observation.
@@ -107,7 +111,11 @@ impl Reinforce {
     }
 
     /// Run one full episode and take one gradient step. Returns the episode's total reward.
-    pub fn train_episode<E: Environment>(&mut self, optimizer: &mut impl Optimizer, env: &mut E) -> f32 {
+    pub fn train_episode<E: Environment>(
+        &mut self,
+        optimizer: &mut impl Optimizer,
+        env: &mut E,
+    ) -> f32 {
         let n_actions = env.num_actions();
         let mut obs = env.reset();
         let mut obs_hist: Vec<Vec<f32>> = Vec::new();
@@ -172,7 +180,12 @@ impl ActorCritic {
             .add(Linear::new(obs_dim, hidden_dim, true))
             .add(Tanh)
             .add(Linear::new(hidden_dim, 1, true));
-        ActorCritic { actor, critic, gamma: 0.99, value_coeff: 0.5 }
+        ActorCritic {
+            actor,
+            critic,
+            gamma: 0.99,
+            value_coeff: 0.5,
+        }
     }
 
     pub fn act(&self, obs: &[f32]) -> usize {
@@ -182,7 +195,11 @@ impl ActorCritic {
     }
 
     /// Train on one episode. Returns total reward.
-    pub fn train_episode<E: Environment>(&self, optimizer: &mut impl Optimizer, env: &mut E) -> f32 {
+    pub fn train_episode<E: Environment>(
+        &self,
+        optimizer: &mut impl Optimizer,
+        env: &mut E,
+    ) -> f32 {
         let n_actions = env.num_actions();
         let mut obs = env.reset();
         let mut obs_hist: Vec<Vec<f32>> = Vec::new();
@@ -368,7 +385,12 @@ impl Dqn {
     }
 
     /// One gradient step on a sampled minibatch from the replay buffer.
-    pub fn train_step(&mut self, buffer: &mut ReplayBuffer, optimizer: &mut impl Optimizer, batch_size: usize) {
+    pub fn train_step(
+        &mut self,
+        buffer: &mut ReplayBuffer,
+        optimizer: &mut impl Optimizer,
+        batch_size: usize,
+    ) {
         if buffer.len() < batch_size {
             return;
         }
@@ -472,7 +494,12 @@ impl Ppo {
     }
 
     /// Collect a rollout and run PPO updates. Returns the mean episode reward.
-    pub fn update<E: Environment>(&mut self, env: &mut E, n_steps: usize, optimizer: &mut impl Optimizer) -> f32 {
+    pub fn update<E: Environment>(
+        &mut self,
+        env: &mut E,
+        n_steps: usize,
+        optimizer: &mut impl Optimizer,
+    ) -> f32 {
         let n_actions = env.num_actions();
         let mut steps: Vec<PpoStep> = Vec::with_capacity(n_steps);
         let mut obs = env.reset();
@@ -489,7 +516,14 @@ impl Ppo {
 
         for _ in 0..n_steps {
             let (a, logp_old) = self.act(&obs);
-            let v = self.critic.forward(&obs_tensor(&obs)).data().iter().copied().next().unwrap_or(0.0);
+            let v = self
+                .critic
+                .forward(&obs_tensor(&obs))
+                .data()
+                .iter()
+                .copied()
+                .next()
+                .unwrap_or(0.0);
             let (next_obs, r, done) = env.step(a);
             rewards += r;
             traj_obs.push(std::mem::replace(&mut obs, next_obs));
@@ -531,19 +565,17 @@ impl Ppo {
                 // for clipping, but backprop through `ce` (so the policy gradient is exact).
                 let ce = logits.cross_entropy_logits(&one_hot(st.action, logits.shape()[1]));
                 let logp_new = -ce.data().iter().copied().next().unwrap_or(0.0);
-                let weight = clipped_advantage_weight(
-                    st.advantage,
-                    st.logp_old,
-                    logp_new,
-                    self.clip_eps,
-                );
+                let weight =
+                    clipped_advantage_weight(st.advantage, st.logp_old, logp_new, self.clip_eps);
                 let w = Tensor::from_vec(vec![weight], vec![1]);
                 let policy_loss = ce.mul(&w);
 
                 // Value loss: (V - G)^2.
                 let g_t = Tensor::from_vec(vec![st.return_], vec![1]);
                 let vdiff = value.sub(&g_t);
-                let value_loss = vdiff.mul(&vdiff).mul(&Tensor::from_vec(vec![self.value_coeff], vec![1]));
+                let value_loss = vdiff
+                    .mul(&vdiff)
+                    .mul(&Tensor::from_vec(vec![self.value_coeff], vec![1]));
 
                 let step_loss = policy_loss.add(&value_loss);
                 step_loss.backward();
@@ -551,7 +583,11 @@ impl Ppo {
             optimizer.step();
         }
 
-        if ep_count > 0 { rewards / ep_count as f32 } else { rewards }
+        if ep_count > 0 {
+            rewards / ep_count as f32
+        } else {
+            rewards
+        }
     }
 }
 
@@ -609,23 +645,41 @@ pub struct BanditEnv {
 impl BanditEnv {
     fn probs_for(k: usize) -> Vec<f32> {
         (0..k)
-            .map(|i| if k > 1 { 0.1 + 0.8 * ((k - 1 - i) as f32) / ((k - 1) as f32) } else { 0.9 })
+            .map(|i| {
+                if k > 1 {
+                    0.1 + 0.8 * ((k - 1 - i) as f32) / ((k - 1) as f32)
+                } else {
+                    0.9
+                }
+            })
             .collect()
     }
 
     /// `k` arms; Bernoulli rewards. Arm 0 is best.
     pub fn new(k: usize) -> Self {
-        BanditEnv { probs: Self::probs_for(k), deterministic: false, rng: rand::SeedableRng::from_entropy() }
+        BanditEnv {
+            probs: Self::probs_for(k),
+            deterministic: false,
+            rng: rand::SeedableRng::from_entropy(),
+        }
     }
 
     pub fn with_seed(k: usize, seed: u64) -> Self {
-        BanditEnv { probs: Self::probs_for(k), deterministic: false, rng: rand::SeedableRng::seed_from_u64(seed) }
+        BanditEnv {
+            probs: Self::probs_for(k),
+            deterministic: false,
+            rng: rand::SeedableRng::seed_from_u64(seed),
+        }
     }
 
     /// `k` arms; the reward is always exactly the arm's expected value (zero-variance signal).
     /// Useful for deterministic testing of learning algorithms.
     pub fn deterministic(k: usize) -> Self {
-        BanditEnv { probs: Self::probs_for(k), deterministic: true, rng: rand::SeedableRng::from_entropy() }
+        BanditEnv {
+            probs: Self::probs_for(k),
+            deterministic: true,
+            rng: rand::SeedableRng::from_entropy(),
+        }
     }
 
     /// `k` arms; arm 0 pays a fixed reward of 1.0, all others pay 0.0 (sparse reward).
@@ -636,7 +690,11 @@ impl BanditEnv {
         if k > 0 {
             probs[0] = 1.0;
         }
-        BanditEnv { probs, deterministic: true, rng: rand::SeedableRng::from_entropy() }
+        BanditEnv {
+            probs,
+            deterministic: true,
+            rng: rand::SeedableRng::from_entropy(),
+        }
     }
 }
 
@@ -677,10 +735,22 @@ pub struct ChainEnv {
 impl ChainEnv {
     /// Action 0 = step toward goal (decrement), action 1 = step away (increment).
     pub fn new(n: usize) -> Self {
-        ChainEnv { n, state: n - 1, max_steps: n * 4, step_penalty: -0.1, step_count: 0 }
+        ChainEnv {
+            n,
+            state: n - 1,
+            max_steps: n * 4,
+            step_penalty: -0.1,
+            step_count: 0,
+        }
     }
     pub fn with_max_steps(n: usize, max_steps: usize) -> Self {
-        ChainEnv { n, state: n - 1, max_steps, step_penalty: -0.1, step_count: 0 }
+        ChainEnv {
+            n,
+            state: n - 1,
+            max_steps,
+            step_penalty: -0.1,
+            step_count: 0,
+        }
     }
     fn obs(&self) -> Vec<f32> {
         let mut v = vec![0.0f32; self.n];

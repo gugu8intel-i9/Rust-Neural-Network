@@ -150,10 +150,26 @@ macro_rules! impl_activation_module {
     };
 }
 
-impl_activation_module!(Sigmoid, crate::activations::sigmoid, "Sigmoid activation module: `1 / (1 + e^-x)`.");
-impl_activation_module!(Tanh, crate::activations::tanh, "Hyperbolic-tangent activation module.");
-impl_activation_module!(Softmax, crate::activations::softmax, "Softmax activation module (over the last axis).");
-impl_activation_module!(GELU, crate::activations::gelu, "Gaussian Error Linear Unit activation module.");
+impl_activation_module!(
+    Sigmoid,
+    crate::activations::sigmoid,
+    "Sigmoid activation module: `1 / (1 + e^-x)`."
+);
+impl_activation_module!(
+    Tanh,
+    crate::activations::tanh,
+    "Hyperbolic-tangent activation module."
+);
+impl_activation_module!(
+    Softmax,
+    crate::activations::softmax,
+    "Softmax activation module (over the last axis)."
+);
+impl_activation_module!(
+    GELU,
+    crate::activations::gelu,
+    "Gaussian Error Linear Unit activation module."
+);
 
 /// SiLU / Swish activation module: `x * sigmoid(x)`, fully differentiable.
 #[derive(Debug, Clone)]
@@ -255,8 +271,16 @@ pub struct LayerNorm {
 impl LayerNorm {
     pub fn new(num_features: usize) -> Self {
         let gamma = Tensor::new(ndarray::ArrayD::ones(ndarray::IxDyn(&[num_features])), true);
-        let beta = Tensor::new(ndarray::ArrayD::zeros(ndarray::IxDyn(&[num_features])), true);
-        LayerNorm { gamma, beta, eps: 1e-5, num_features }
+        let beta = Tensor::new(
+            ndarray::ArrayD::zeros(ndarray::IxDyn(&[num_features])),
+            true,
+        );
+        LayerNorm {
+            gamma,
+            beta,
+            eps: 1e-5,
+            num_features,
+        }
     }
 
     pub fn with_eps(mut self, eps: f32) -> Self {
@@ -291,7 +315,10 @@ pub struct BatchNorm1D {
 impl BatchNorm1D {
     pub fn new(num_features: usize) -> Self {
         let gamma = Tensor::new(ndarray::ArrayD::ones(ndarray::IxDyn(&[num_features])), true);
-        let beta = Tensor::new(ndarray::ArrayD::zeros(ndarray::IxDyn(&[num_features])), true);
+        let beta = Tensor::new(
+            ndarray::ArrayD::zeros(ndarray::IxDyn(&[num_features])),
+            true,
+        );
         BatchNorm1D {
             gamma,
             beta,
@@ -374,7 +401,7 @@ impl Module for NormalMoE {
     fn forward(&self, input: &Tensor) -> Tensor {
         // Compute routing logits
         let _routing_logits = self.gate.forward(input);
-        
+
         // As a dense approximation without tensor slicing/top-k ops in the autograd engine,
         // we pass the input through all experts and sum their outputs.
         // In a full implementation, this would use sparse routing and gating weights.
@@ -383,7 +410,7 @@ impl Module for NormalMoE {
             let expert_out = self.experts[i].forward(input);
             combined_output = combined_output.add(&expert_out);
         }
-        
+
         combined_output
     }
 
@@ -404,13 +431,18 @@ pub struct FineGrainedMoE {
 }
 
 impl FineGrainedMoE {
-    pub fn new(in_features: usize, shared_hidden: usize, expert_hidden: usize, num_experts: usize) -> Self {
+    pub fn new(
+        in_features: usize,
+        shared_hidden: usize,
+        expert_hidden: usize,
+        num_experts: usize,
+    ) -> Self {
         let gate = Linear::new(in_features, num_experts, true);
         let shared_expert = Sequential::new()
             .add(Linear::new(in_features, shared_hidden, true))
             .add(ReLU)
             .add(Linear::new(shared_hidden, in_features, true));
-            
+
         let mut experts = Vec::new();
         for _ in 0..num_experts {
             let expert = Sequential::new()
@@ -419,23 +451,27 @@ impl FineGrainedMoE {
                 .add(Linear::new(expert_hidden, in_features, true));
             experts.push(expert);
         }
-        FineGrainedMoE { gate, shared_expert, experts }
+        FineGrainedMoE {
+            gate,
+            shared_expert,
+            experts,
+        }
     }
 }
 
 impl Module for FineGrainedMoE {
     fn forward(&self, input: &Tensor) -> Tensor {
         let _routing_logits = self.gate.forward(input);
-        
+
         // Pass through shared expert
         let mut combined_output = self.shared_expert.forward(input);
-        
+
         // Dense approximation for fine-grained experts
         for expert in &self.experts {
             let expert_out = expert.forward(input);
             combined_output = combined_output.add(&expert_out);
         }
-        
+
         combined_output
     }
 
@@ -519,8 +555,8 @@ impl Module for RNNCell {
 
 /// CSA (Compressed Sparse Attention) by DeepSeek
 ///
-/// Reduces KV cache memory by compressing multiple tokens into a single representation 
-/// and utilizing sparse attention (top-k selection) to maintain fine-grained selection 
+/// Reduces KV cache memory by compressing multiple tokens into a single representation
+/// and utilizing sparse attention (top-k selection) to maintain fine-grained selection
 /// and long-distance dependency resolution.
 #[derive(Debug, Clone)]
 pub struct CSA {
@@ -552,7 +588,7 @@ impl Module for CSA {
 
 /// HCA (Heavily/Heavy Compressed Attention) by DeepSeek
 ///
-/// Achieves extreme memory savings (e.g., 128x) by heavily compressing massive groups of tokens 
+/// Achieves extreme memory savings (e.g., 128x) by heavily compressing massive groups of tokens
 /// into single entries, providing broad coverage and dense attention for global semantic understanding.
 #[derive(Debug, Clone)]
 pub struct HCA {
@@ -582,7 +618,7 @@ impl Module for HCA {
 }
 
 /// FakeQuantize layer for Quantization Aware Training (QAT)
-/// 
+///
 /// Simulates lower precision (e.g., INT8) during the forward pass by clamping and rounding,
 /// while allowing full-precision gradients to flow backward using the Straight-Through Estimator (STE).
 #[derive(Debug, Clone)]
@@ -630,7 +666,9 @@ pub struct Flatten;
 impl Module for Flatten {
     fn forward(&self, input: &Tensor) -> Tensor {
         let shape = input.shape();
-        if shape.len() <= 1 { return input.clone(); }
+        if shape.len() <= 1 {
+            return input.clone();
+        }
         let batch_size = shape[0];
         let features = shape.iter().skip(1).product();
         input.reshape(&[batch_size, features])

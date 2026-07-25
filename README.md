@@ -9,6 +9,13 @@ and [`rayon`](https://crates.io/crates/rayon).
 - **Tensors with autograd**: N-dimensional tensors (f32) that track a computation graph for
   reverse-mode automatic differentiation — `add`, `sub`, `mul`, `matmul`, `relu`, `reshape`,
   `transpose`, `sum`, plus fused loss ops. Broadcasting is correctly handled in the backward pass.
+  The matmul backward is routed through the BLAS engine with transpose flags (no materialised
+  transpose), and the iterative topological sort is **O(V+E)** even for shared subgraphs.
+- **BLAS backend** (`src/blas.rs`): a hand-written, transpose-aware, cache-packed linear-algebra
+  engine — not a binding to OpenBLAS/MKL. Level-3 `sgemm` (BLIS-style B-panel packing +
+  AVX2/FMA micro-kernel + runtime dispatch + size-aware blocking), Level-2 `sgemv`, Level-1
+  (`sdot`/`saxpy`/`sscal`/`scopy`/`snrm2`), a `BlasBackend` trait for plugging in system BLAS, and
+  an opt-in `gemm_strassen` for huge near-square matmuls. Pure Rust — no `cc` required.
 - **Neural network layers**: `Linear`, `Flatten`, `Dropout`, `BatchNorm1D`,
   `NormalMoE`, `FineGrainedMoE`, `Recursive`, `RNNCell`, `FakeQuantize` (QAT), DeepSeek-style
   `CSA` / `HCA`, and activation layers `ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `GELU`.
@@ -458,6 +465,35 @@ cargo run --example classification  # train an MLP with cross-entropy (100% on s
 cargo run --example library_usage   # end-to-end mini training loop
 ```
 
+## BLAS backend (`src/blas.rs`)
+
+A from-scratch, transpose-aware, cache-packed linear-algebra engine (no OpenBLAS/MKL binding).
+The same `sgemm` powers both `Tensor::matmul` and its backward, so the forward and the gradient
+GEMMs share one optimized kernel.
+
+```rust
+use rust_nn::blas::{sgemm, Transpose, NativeBackend, BlasBackend};
+
+// C[m,n] = A[m,k] · B[k,n]   (row-major, leading-dim strides)
+let (m, n, k) = (128, 64, 256);
+let a = vec![0.5f32; m * k];
+let b = vec![0.25f32; k * n];
+let mut c = vec![0.0f32; m * n];
+sgemm(Transpose::NoTrans, Transpose::NoTrans, m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c, n);
+
+// The matmul BACKWARD shape — A · Bᵀ with NO transposed copy of B:
+//   sgemm(NoTrans, Trans, m, k, n, 1.0, &grad, n, &b, n, 0.0, &mut dA, k)
+
+// Trait API (swap in your own / system BLAS):
+let backend = NativeBackend;
+backend.sgemm(Transpose::NoTrans, Transpose::NoTrans, m, n, k, 1.0, &a, k, &b, n, 0.0, &mut c, n);
+println!("active backend: {}", backend.name());
+```
+
+Level-2 (`sgemv`) and Level-1 (`sdot`, `saxpy`, `sscal`, `scopy`, `snrm2`) are also exported. For
+huge near-square matmuls where a few ULPs of extra f32 error are acceptable, `gemm_strassen`
+recurses with 7 sub-multiplies (O(n^2.807)) — it is opt-in and never used by the autograd path.
+
 ## Tests
 
 Gradient correctness is verified against finite differences:
@@ -476,6 +512,34 @@ cargo test
   WebGPU/WGPU execution path remains on the roadmap.
 
 ## Changelog
+
+### 1.1.0 — From-scratch BLAS backend + gradient-flow overhaul
+
+- **BLAS engine** (`src/blas.rs`): a complete hand-written BLAS, not a binding.
+  - **Transpose-aware `sgemm`** with the classic `C = α·op(A)·op(B) + β·C` signature and
+    leading-dimension strides. `op(B) = Trans` is handled inside *packing*, so a transposed
+    operand is never materialised as a copy — exactly what backprop needs.
+  - **BLIS-style B-panel cache packing**: each `[KC, NC]` panel of `B` is packed into a contiguous
+    buffer and reused across a whole `[MC, KC]` A-block, so the AVX2/FMA micro-kernel reads
+    contiguous `B` and reuses it across `MC` rows instead of striding by the full `n`.
+  - **AVX2 + FMA micro-kernel** via `std::arch` with runtime feature detection and a scalar
+    fallback; multi-threaded across M-blocks (each task owns its C row-block — no races).
+  - **Levels 1 & 2**: `sdot`, `saxpy`, `sscal`, `scopy`, `snrm2`, and `sgemv` (NoTrans + Trans).
+  - **`BlasBackend` trait** + `NativeBackend` so a system BLAS (OpenBLAS / Accelerate / MKL) can be
+    slotted in; size-aware dispatch (tiny → unblocked, normal → packed blocked).
+  - **Opt-in `gemm_strassen`** (7-multiply recursion, O(n^2.807)) for huge near-square matmuls,
+    kept off the default gradient path because f32 Strassen has larger rounding error.
+  - 14 new correctness tests across all transpose flags, α/β accumulation, edge cases, and Strassen.
+- **Gradient-flow / per-step cost fixes** (the backward was the training bottleneck):
+  - The matmul **backward** (`∂L/∂A = ∂L/∂C · Bᵀ`, `∂L/∂B = Aᵀ · ∂L/∂C`) now runs through the
+    packed BLAS `sgemm` with transpose flags instead of `ndarray`'s naïve `dot` on a transposed
+    view — no full transpose copy and the same AVX2/FMA kernel as the forward.
+  - The iterative **topological sort** is now **O(V+E)**. The previous version re-pushed a node's
+    children on every reachable path, which blew up exponentially for shared subgraphs (residual
+    connections, weight tying, multi-term losses) and dominated backward cost on such models. A
+    `discovered` set guarantees each node's children are pushed exactly once.
+  - Each node's gradient is stored by **move** instead of clone in the backward sweep.
+- Bumped to `1.1.0`; `cargo test` 323 passed, `cargo clippy --all-targets` 0 warnings, `cargo fmt` clean.
 
 ### 0.12.0 — Platform-specific GPU kernels (NVIDIA / AMD / Apple)
 

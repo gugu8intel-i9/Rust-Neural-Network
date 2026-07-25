@@ -28,12 +28,12 @@
 //! right neighbor (rank+1) and listens for its left neighbor (rank-1). The protocol is a simple
 //! binary message format: `[msg_type: u8][length: u32][payload: bytes]`.
 
+use crate::loss::Loss;
 use crate::nn::Module;
 use crate::optim::Optimizer;
-use crate::loss::Loss;
 use crate::tensor::Tensor;
-use std::net::{TcpListener, TcpStream};
 use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 
 // ==================== Ring All-Reduce (pure computation) ====================
 
@@ -94,7 +94,8 @@ pub fn ring_all_reduce_simulated(
         let recv_end = (recv_start + chunk_size).min(n);
 
         let left_rank = (rank + world_size - 1) % world_size;
-        local_data[recv_start..recv_end].copy_from_slice(&all_workers[left_rank][recv_start..recv_end]);
+        local_data[recv_start..recv_end]
+            .copy_from_slice(&all_workers[left_rank][recv_start..recv_end]);
 
         all_workers[rank][recv_start..recv_end].copy_from_slice(&local_data[recv_start..recv_end]);
     }
@@ -104,7 +105,9 @@ pub fn ring_all_reduce_simulated(
 /// Process all workers simultaneously — the correct simulation.
 /// After this call, every worker's buffer contains the **sum** of all workers.
 pub fn ring_all_reduce_all(workers: &mut [Vec<f32>], world_size: usize) {
-    if world_size <= 1 { return; }
+    if world_size <= 1 {
+        return;
+    }
     let n = workers[0].len();
     // The ring all-reduce algorithm ultimately computes the element-wise sum of all workers.
     // The ring topology is just a bandwidth-optimal way to compute this same sum.
@@ -153,10 +156,8 @@ pub fn unflatten_gradients(params: &[Tensor], flat_grads: &[f32]) {
     for p in params {
         let n = p.len();
         let chunk = &flat_grads[offset..offset + n];
-        let arr = ndarray::ArrayD::from_shape_vec(
-            ndarray::IxDyn(&p.shape()),
-            chunk.to_vec(),
-        ).unwrap();
+        let arr =
+            ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&p.shape()), chunk.to_vec()).unwrap();
         p.0.write().unwrap().grad = Some(arr);
         offset += n;
     }
@@ -228,12 +229,20 @@ impl DistributedConfig {
 
     /// Create config for a specific worker.
     pub fn new(rank: usize, world_size: usize) -> Self {
-        DistributedConfig { rank, world_size, ..Default::default() }
+        DistributedConfig {
+            rank,
+            world_size,
+            ..Default::default()
+        }
     }
 
     /// The effective learning rate after scaling.
     pub fn effective_lr(&self, base_lr: f32) -> f32 {
-        if self.scale_lr { base_lr * self.world_size as f32 } else { base_lr }
+        if self.scale_lr {
+            base_lr * self.world_size as f32
+        } else {
+            base_lr
+        }
     }
 
     /// Which samples this worker should process.
@@ -282,12 +291,18 @@ impl Message {
     /// Create a gradient chunk message from a float slice.
     pub fn gradient_chunk(data: &[f32]) -> Self {
         let payload: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
-        Message { msg_type: MessageType::GradientChunk, payload }
+        Message {
+            msg_type: MessageType::GradientChunk,
+            payload,
+        }
     }
 
     /// Create a barrier message.
     pub fn barrier() -> Self {
-        Message { msg_type: MessageType::Barrier, payload: Vec::new() }
+        Message {
+            msg_type: MessageType::Barrier,
+            payload: Vec::new(),
+        }
     }
 
     /// Serialize to bytes: [type: u8][len: u32][payload].
@@ -301,7 +316,9 @@ impl Message {
 
     /// Deserialize from bytes.
     pub fn deserialize(data: &[u8]) -> Option<Self> {
-        if data.len() < 5 { return None; }
+        if data.len() < 5 {
+            return None;
+        }
         let msg_type = match data[0] {
             0 => MessageType::GradientChunk,
             1 => MessageType::Barrier,
@@ -311,13 +328,19 @@ impl Message {
             _ => return None,
         };
         let len = u32::from_le_bytes(data[1..5].try_into().ok()?) as usize;
-        if data.len() < 5 + len { return None; }
-        Some(Message { msg_type, payload: data[5..5 + len].to_vec() })
+        if data.len() < 5 + len {
+            return None;
+        }
+        Some(Message {
+            msg_type,
+            payload: data[5..5 + len].to_vec(),
+        })
     }
 
     /// Extract float payload (for gradient chunks).
     pub fn as_floats(&self) -> Vec<f32> {
-        self.payload.chunks_exact(4)
+        self.payload
+            .chunks_exact(4)
             .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
             .collect()
     }
@@ -338,8 +361,12 @@ pub fn recv_message(stream: &mut TcpStream) -> std::io::Result<Message> {
     stream.read_exact(&mut payload)?;
     let mut full = header.to_vec();
     full.extend_from_slice(&payload);
-    Message::deserialize(&full)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to deserialize message"))
+    Message::deserialize(&full).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Failed to deserialize message",
+        )
+    })
 }
 
 // ==================== Distributed Worker ====================
@@ -364,7 +391,10 @@ impl std::fmt::Debug for DistributedWorker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DistributedWorker")
             .field("config", &self.config)
-            .field("connected", &(self.right_conn.is_some() && self.left_conn.is_some()))
+            .field(
+                "connected",
+                &(self.right_conn.is_some() && self.left_conn.is_some()),
+            )
             .finish()
     }
 }
@@ -380,17 +410,17 @@ impl DistributedWorker {
     }
 
     /// Connect to a ring of workers. The coordinator at `master_addr` assigns connections.
-    pub fn connect(
-        config: DistributedConfig,
-        master_addr: &str,
-    ) -> std::io::Result<Self> {
+    pub fn connect(config: DistributedConfig, master_addr: &str) -> std::io::Result<Self> {
         // Connect to master to get neighbor addresses.
         let mut master = TcpStream::connect(master_addr)?;
         // Send our rank to the master.
-        send_message(&mut master, &Message {
-            msg_type: MessageType::Heartbeat,
-            payload: config.rank.to_le_bytes().to_vec(),
-        })?;
+        send_message(
+            &mut master,
+            &Message {
+                msg_type: MessageType::Heartbeat,
+                payload: config.rank.to_le_bytes().to_vec(),
+            },
+        )?;
         // Receive right neighbor address.
         let right_msg = recv_message(&mut master)?;
         let right_addr = String::from_utf8_lossy(&right_msg.payload).to_string();
@@ -407,10 +437,13 @@ impl DistributedWorker {
         let local_port = listener.local_addr()?.port();
         // Tell master our listening address.
         let my_addr = format!("{}:{local_port}", get_local_ip());
-        send_message(&mut master, &Message {
-            msg_type: MessageType::Parameters,
-            payload: my_addr.into_bytes(),
-        })?;
+        send_message(
+            &mut master,
+            &Message {
+                msg_type: MessageType::Parameters,
+                payload: my_addr.into_bytes(),
+            },
+        )?;
         listener.set_nonblocking(true)?;
         let left_conn = loop {
             match listener.accept() {
@@ -423,7 +456,11 @@ impl DistributedWorker {
             }
         };
 
-        Ok(DistributedWorker { config, right_conn, left_conn })
+        Ok(DistributedWorker {
+            config,
+            right_conn,
+            left_conn,
+        })
     }
 
     /// Run one distributed training step.
@@ -448,7 +485,12 @@ impl DistributedWorker {
 
         // Synchronize gradients via all-reduce.
         let params = model.parameters();
-        sync_gradients(&params, self.config.world_size, other_worker_grads, self.config.rank);
+        sync_gradients(
+            &params,
+            self.config.world_size,
+            other_worker_grads,
+            self.config.rank,
+        );
 
         // Gradient clipping (optional).
         if self.config.grad_clip > 0.0 {
@@ -544,10 +586,14 @@ mod tests {
         let (s3, e3) = cfg3.shard_range(100);
 
         // No overlap.
-        assert_eq!(s0, 0); assert_eq!(e0, 25);
-        assert_eq!(s1, 25); assert_eq!(e1, 50);
-        assert_eq!(s2, 50); assert_eq!(e2, 75);
-        assert_eq!(s3, 75); assert_eq!(e3, 100);
+        assert_eq!(s0, 0);
+        assert_eq!(e0, 25);
+        assert_eq!(s1, 25);
+        assert_eq!(e1, 50);
+        assert_eq!(s2, 50);
+        assert_eq!(e2, 75);
+        assert_eq!(s3, 75);
+        assert_eq!(e3, 100);
     }
 
     #[test]
@@ -574,7 +620,10 @@ mod tests {
         let cfg = DistributedConfig::new(0, 8);
         assert!((cfg.effective_lr(0.001) - 0.008).abs() < 1e-9);
 
-        let cfg2 = DistributedConfig { scale_lr: false, ..DistributedConfig::new(0, 8) };
+        let cfg2 = DistributedConfig {
+            scale_lr: false,
+            ..DistributedConfig::new(0, 8)
+        };
         assert!((cfg2.effective_lr(0.001) - 0.001).abs() < 1e-9);
     }
 
@@ -625,9 +674,8 @@ mod tests {
         let model = crate::nn::Sequential::new().add(Linear::new(4, 4, true));
         // Set artificially large gradients.
         for p in &model.parameters() {
-            p.0.write().unwrap().grad = Some(
-                ndarray::ArrayD::from_elem(ndarray::IxDyn(&[4, 4]), 100.0)
-            );
+            p.0.write().unwrap().grad =
+                Some(ndarray::ArrayD::from_elem(ndarray::IxDyn(&[4, 4]), 100.0));
         }
         let params = model.parameters();
         clip_gradients(&params, 1.0);
@@ -638,7 +686,11 @@ mod tests {
                 norm_sq += g.iter().map(|v| v * v).sum::<f32>();
             }
         }
-        assert!(norm_sq.sqrt() <= 1.01, "gradient norm should be <= 1.0 after clipping, got {}", norm_sq.sqrt());
+        assert!(
+            norm_sq.sqrt() <= 1.01,
+            "gradient norm should be <= 1.0 after clipping, got {}",
+            norm_sq.sqrt()
+        );
     }
 
     #[test]
@@ -647,8 +699,10 @@ mod tests {
         let t2 = Tensor::from_vec(vec![5.0, 6.0], vec![2]);
         let params = vec![t1, t2];
         // Set gradients.
-        params[0].0.write().unwrap().grad = Some(ndarray::ArrayD::from_elem(ndarray::IxDyn(&[2,2]), 1.0));
-        params[1].0.write().unwrap().grad = Some(ndarray::ArrayD::from_elem(ndarray::IxDyn(&[2]), 2.0));
+        params[0].0.write().unwrap().grad =
+            Some(ndarray::ArrayD::from_elem(ndarray::IxDyn(&[2, 2]), 1.0));
+        params[1].0.write().unwrap().grad =
+            Some(ndarray::ArrayD::from_elem(ndarray::IxDyn(&[2]), 2.0));
 
         let flat = flatten_gradients(&params);
         assert_eq!(flat.len(), 6);
@@ -657,9 +711,15 @@ mod tests {
         unflatten_gradients(&params, &modified);
 
         let g0 = params[0].grad().unwrap();
-        assert!((g0.iter().copied().next().unwrap() - 3.0).abs() < 1e-5, "should be 3.0");
+        assert!(
+            (g0.iter().copied().next().unwrap() - 3.0).abs() < 1e-5,
+            "should be 3.0"
+        );
         let g1 = params[1].grad().unwrap();
-        assert!((g1.iter().copied().next().unwrap() - 6.0).abs() < 1e-5, "should be 6.0");
+        assert!(
+            (g1.iter().copied().next().unwrap() - 6.0).abs() < 1e-5,
+            "should be 6.0"
+        );
     }
 
     #[test]

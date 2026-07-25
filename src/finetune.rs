@@ -26,9 +26,9 @@
 //! - Per-step timing and throughput reporting
 //! - Optional LoRA (only train adapter matrices)
 
+use crate::loss::Loss;
 use crate::nn::{Linear, Module};
 use crate::optim::Optimizer;
-use crate::loss::Loss;
 use crate::tensor::Tensor;
 use crate::train::SimpleDataLoader;
 use std::time::Instant;
@@ -173,7 +173,10 @@ impl LrSchedule {
     pub fn lr(&self, step: usize) -> f32 {
         match self {
             LrSchedule::Constant => 0.001, // default; overridden by FastTrainer
-            LrSchedule::Warmup { warmup_steps, base_lr } => {
+            LrSchedule::Warmup {
+                warmup_steps,
+                base_lr,
+            } => {
                 if step < *warmup_steps {
                     base_lr * (step as f32 / *warmup_steps as f32)
                 } else {
@@ -189,8 +192,8 @@ impl LrSchedule {
                 if step < *warmup_steps {
                     base_lr * (step as f32 / *warmup_steps as f32)
                 } else {
-                    let progress = (step - warmup_steps) as f32
-                        / (total_steps - warmup_steps).max(1) as f32;
+                    let progress =
+                        (step - warmup_steps) as f32 / (total_steps - warmup_steps).max(1) as f32;
                     let cosine = 0.5 * (1.0 + (std::f32::consts::PI * progress).cos());
                     min_lr + (base_lr - min_lr) * cosine
                 }
@@ -343,8 +346,8 @@ impl FastTrainer {
                 let loss = loss_fn.forward(&out, &targets);
                 loss.backward();
 
-                let loss_val = loss.data().iter().copied().next().unwrap_or(0.0)
-                    / inputs.len() as f32;
+                let loss_val =
+                    loss.data().iter().copied().next().unwrap_or(0.0) / inputs.len() as f32;
                 epoch_loss += loss_val;
                 num_batches += 1;
                 accum_count += 1;
@@ -459,9 +462,9 @@ fn clip_grad_norm(params: &[Tensor], max_norm: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nn::{Sequential, ReLU};
-    use crate::optim::Adam;
     use crate::loss::MSELoss;
+    use crate::nn::{ReLU, Sequential};
+    use crate::optim::Adam;
 
     #[test]
     fn lora_forward_shape() {
@@ -478,7 +481,10 @@ mod tests {
         let delta = lora.weight_delta();
         let d: Vec<f32> = delta.data().iter().copied().collect();
         for v in &d {
-            assert!(v.abs() < 1e-6, "weight delta should be zero at init, got {v}");
+            assert!(
+                v.abs() < 1e-6,
+                "weight delta should be zero at init, got {v}"
+            );
         }
     }
 
@@ -503,7 +509,11 @@ mod tests {
         let lora_vals: Vec<f32> = y_lora.data().iter().copied().collect();
         let merged_vals: Vec<f32> = y_merged.data().iter().copied().collect();
         for (a, b) in lora_vals.iter().zip(merged_vals.iter()) {
-            assert!((a - b).abs() < 0.1, "lora forward should match merged, diff: {}", (a - b).abs());
+            assert!(
+                (a - b).abs() < 0.1,
+                "lora forward should match merged, diff: {}",
+                (a - b).abs()
+            );
         }
     }
 
@@ -514,7 +524,10 @@ mod tests {
         let trainable_count: usize = trainable.iter().map(|t| t.len()).sum();
         let full_count = 256 * 256;
         // LoRA: 2 * 8 * 256 = 4096 vs full: 65536 → 16× fewer.
-        assert!(trainable_count < full_count / 10, "LoRA should have << full params");
+        assert!(
+            trainable_count < full_count / 10,
+            "LoRA should have << full params"
+        );
     }
 
     #[test]
@@ -526,10 +539,16 @@ mod tests {
 
     #[test]
     fn lr_schedule_warmup() {
-        let s = LrSchedule::Warmup { warmup_steps: 100, base_lr: 0.01 };
+        let s = LrSchedule::Warmup {
+            warmup_steps: 100,
+            base_lr: 0.01,
+        };
         assert!(s.lr(0) < 0.001, "lr(0) should be near 0");
         assert!((s.lr(100) - 0.01).abs() < 1e-6, "lr(100) should be base_lr");
-        assert!((s.lr(500) - 0.01).abs() < 1e-6, "lr(500) should stay at base_lr");
+        assert!(
+            (s.lr(500) - 0.01).abs() < 1e-6,
+            "lr(500) should stay at base_lr"
+        );
     }
 
     #[test]
@@ -545,7 +564,11 @@ mod tests {
         assert!((s.lr(10) - 0.01).abs() < 1e-6);
         // Cosine decay: lr should decrease from base to min.
         assert!(s.lr(50) < 0.01);
-        assert!(s.lr(99) > 0.0009, "lr(99) should be near min_lr, got {}", s.lr(99));
+        assert!(
+            s.lr(99) > 0.0009,
+            "lr(99) should be near min_lr, got {}",
+            s.lr(99)
+        );
     }
 
     #[test]
@@ -568,7 +591,10 @@ mod tests {
             micro_batch_size: 16,
             grad_accum_steps: 1,
             base_lr: 0.01,
-            lr_schedule: LrSchedule::Warmup { warmup_steps: 2, base_lr: 0.01 },
+            lr_schedule: LrSchedule::Warmup {
+                warmup_steps: 2,
+                base_lr: 0.01,
+            },
             grad_clip: 1.0,
             use_lora: false,
             lora_rank: 0,
@@ -586,9 +612,7 @@ mod tests {
 
     #[test]
     fn fast_trainer_grad_accumulation() {
-        let model = std::sync::Arc::new(
-            Sequential::new().add(Linear::new(4, 2, true)),
-        );
+        let model = std::sync::Arc::new(Sequential::new().add(Linear::new(4, 2, true)));
         let params = model.parameters();
         let mut opt = Adam::new(params, 0.01);
         let loss_fn = MSELoss;

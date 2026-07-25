@@ -6,9 +6,9 @@
 use ndarray::{ArrayD, IxDyn};
 use ndarray_rand::rand_distr::{Normal, StandardNormal};
 use ndarray_rand::RandomExt;
-use std::sync::{Arc, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::ops::{Add, Mul, Sub};
+use std::sync::{Arc, RwLock};
 
 /// Reduce a gradient array back down to `target_shape`, undoing any broadcasting
 /// that was applied during the forward pass.
@@ -111,14 +111,18 @@ pub enum Op {
     Rope(Tensor, Vec<f32>, Vec<f32>, usize),
 }
 
-
 /// Helper: extract the input tensors from any Op variant (for graph traversal).
 impl Op {
     fn inputs(&self) -> Vec<&Tensor> {
         match self {
-            Op::Add(a, b) | Op::Sub(a, b) | Op::Mul(a, b) | Op::MatMul(a, b)
+            Op::Add(a, b)
+            | Op::Sub(a, b)
+            | Op::Mul(a, b)
+            | Op::MatMul(a, b)
             | Op::Conv1DCausal(a, b) => vec![a, b],
-            Op::SoftmaxCrossEntropy(a, b) | Op::BCEWithLogits(a, b) | Op::BCE(a, b)
+            Op::SoftmaxCrossEntropy(a, b)
+            | Op::BCEWithLogits(a, b)
+            | Op::BCE(a, b)
             | Op::L1(a, b) => vec![a, b],
             Op::Huber(a, b, _) => vec![a, b],
             Op::ReLU(a) | Op::Transpose(a) | Op::Softplus(a) | Op::Sigmoid(a) => vec![a],
@@ -161,7 +165,8 @@ fn stable_softmax(data: &ArrayD<f32>) -> ArrayD<f32> {
             out[[i, j]] *= inv;
         }
     }
-    out.into_shape(IxDyn(data.shape())).expect("softmax restore shape")
+    out.into_shape(IxDyn(data.shape()))
+        .expect("softmax restore shape")
 }
 
 /// A multi-dimensional tensor with automatic differentiation.
@@ -276,7 +281,8 @@ impl Tensor {
 
     pub fn add(&self, other: &Tensor) -> Tensor {
         let data = &self.0.read().unwrap().data + &other.0.read().unwrap().data;
-        let requires_grad = self.0.read().unwrap().requires_grad || other.0.read().unwrap().requires_grad;
+        let requires_grad =
+            self.0.read().unwrap().requires_grad || other.0.read().unwrap().requires_grad;
         let res = Tensor::new(data, requires_grad);
         if requires_grad {
             res.0.write().unwrap().creator = Some(Arc::new(Op::Add(self.clone(), other.clone())));
@@ -286,7 +292,8 @@ impl Tensor {
 
     pub fn sub(&self, other: &Tensor) -> Tensor {
         let data = &self.0.read().unwrap().data - &other.0.read().unwrap().data;
-        let requires_grad = self.0.read().unwrap().requires_grad || other.0.read().unwrap().requires_grad;
+        let requires_grad =
+            self.0.read().unwrap().requires_grad || other.0.read().unwrap().requires_grad;
         let res = Tensor::new(data, requires_grad);
         if requires_grad {
             res.0.write().unwrap().creator = Some(Arc::new(Op::Sub(self.clone(), other.clone())));
@@ -296,7 +303,8 @@ impl Tensor {
 
     pub fn mul(&self, other: &Tensor) -> Tensor {
         let data = &self.0.read().unwrap().data * &other.0.read().unwrap().data;
-        let requires_grad = self.0.read().unwrap().requires_grad || other.0.read().unwrap().requires_grad;
+        let requires_grad =
+            self.0.read().unwrap().requires_grad || other.0.read().unwrap().requires_grad;
         let res = Tensor::new(data, requires_grad);
         if requires_grad {
             res.0.write().unwrap().creator = Some(Arc::new(Op::Mul(self.clone(), other.clone())));
@@ -305,24 +313,55 @@ impl Tensor {
     }
 
     pub fn matmul(&self, other: &Tensor) -> Tensor {
-        let a = self.0.read().unwrap().data.clone().into_dimensionality::<ndarray::Ix2>().expect("MatMul expects 2D");
-        let b = other.0.read().unwrap().data.clone().into_dimensionality::<ndarray::Ix2>().expect("MatMul expects 2D");
+        let a = self
+            .0
+            .read()
+            .unwrap()
+            .data
+            .clone()
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("MatMul expects 2D");
+        let b = other
+            .0
+            .read()
+            .unwrap()
+            .data
+            .clone()
+            .into_dimensionality::<ndarray::Ix2>()
+            .expect("MatMul expects 2D");
 
         let (m, k) = (a.shape()[0], a.shape()[1]);
         let n = b.shape()[1];
 
-        // Use the SIMD-accelerated, cache-blocked, multi-threaded GEMM kernel.
+        // Routed through the BLAS engine (transpose-aware, cache-packed, AVX2+FMA micro-kernel).
+        // The forward is a plain `C = A·B`, i.e. both operands NoTrans.
         let a_flat: Vec<f32> = a.iter().copied().collect();
         let b_flat: Vec<f32> = b.iter().copied().collect();
         let mut c_flat = vec![0.0f32; m * n];
-        crate::simd::simd_matmul(&a_flat, &b_flat, &mut c_flat, m, k, n);
+        crate::blas::sgemm(
+            crate::blas::Transpose::NoTrans,
+            crate::blas::Transpose::NoTrans,
+            m,
+            n,
+            k,
+            1.0,
+            &a_flat,
+            k,
+            &b_flat,
+            n,
+            0.0,
+            &mut c_flat,
+            n,
+        );
 
         let res_data = ArrayD::from_shape_vec(IxDyn(&[m, n]), c_flat).unwrap();
 
-        let requires_grad = self.0.read().unwrap().requires_grad || other.0.read().unwrap().requires_grad;
+        let requires_grad =
+            self.0.read().unwrap().requires_grad || other.0.read().unwrap().requires_grad;
         let res = Tensor::new(res_data, requires_grad);
         if requires_grad {
-            res.0.write().unwrap().creator = Some(Arc::new(Op::MatMul(self.clone(), other.clone())));
+            res.0.write().unwrap().creator =
+                Some(Arc::new(Op::MatMul(self.clone(), other.clone())));
         }
         res
     }
@@ -338,10 +377,18 @@ impl Tensor {
     }
 
     pub fn reshape(&self, shape: &[usize]) -> Tensor {
-        let data = self.0.read().unwrap().data.clone().into_shape(IxDyn(shape)).expect("Reshape fail");
+        let data = self
+            .0
+            .read()
+            .unwrap()
+            .data
+            .clone()
+            .into_shape(IxDyn(shape))
+            .expect("Reshape fail");
         let res = Tensor::new(data, self.0.read().unwrap().requires_grad);
         if self.0.read().unwrap().requires_grad {
-            res.0.write().unwrap().creator = Some(Arc::new(Op::Reshape(self.clone(), self.shape())));
+            res.0.write().unwrap().creator =
+                Some(Arc::new(Op::Reshape(self.clone(), self.shape())));
         }
         res
     }
@@ -377,8 +424,10 @@ impl Tensor {
         let requires_grad = self.0.read().unwrap().requires_grad;
         let res = Tensor::new(ndarray::arr0(loss).into_dyn(), requires_grad);
         if requires_grad {
-            res.0.write().unwrap().creator =
-                Some(Arc::new(Op::SoftmaxCrossEntropy(self.clone(), target.clone())));
+            res.0.write().unwrap().creator = Some(Arc::new(Op::SoftmaxCrossEntropy(
+                self.clone(),
+                target.clone(),
+            )));
         }
         res
     }
@@ -399,7 +448,11 @@ impl Tensor {
     pub fn bce_with_logits(&self, target: &Tensor) -> Tensor {
         let logits = self.0.read().unwrap().data.clone();
         let tgt = target.0.read().unwrap().data.clone();
-        assert_eq!(logits.shape(), tgt.shape(), "bce_with_logits: shape mismatch");
+        assert_eq!(
+            logits.shape(),
+            tgt.shape(),
+            "bce_with_logits: shape mismatch"
+        );
         // loss = max(x,0) - x*z + log(1 + exp(-|x|)), averaged.
         let loss = logits
             .iter()
@@ -445,7 +498,11 @@ impl Tensor {
         let pred = self.0.read().unwrap().data.clone();
         let tgt = target.0.read().unwrap().data.clone();
         assert_eq!(pred.shape(), tgt.shape(), "l1_loss: shape mismatch");
-        let loss = pred.iter().zip(tgt.iter()).map(|(&a, &b)| (a - b).abs()).sum::<f32>()
+        let loss = pred
+            .iter()
+            .zip(tgt.iter())
+            .map(|(&a, &b)| (a - b).abs())
+            .sum::<f32>()
             / pred.len() as f32;
 
         let requires_grad = self.0.read().unwrap().requires_grad;
@@ -546,8 +603,12 @@ impl Tensor {
             || v.0.read().unwrap().requires_grad;
         let res = Tensor::new(out, requires_grad);
         if requires_grad {
-            res.0.write().unwrap().creator =
-                Some(Arc::new(Op::FlashAttention(q.clone(), k.clone(), v.clone(), scale)));
+            res.0.write().unwrap().creator = Some(Arc::new(Op::FlashAttention(
+                q.clone(),
+                k.clone(),
+                v.clone(),
+                scale,
+            )));
         }
         res
     }
@@ -568,7 +629,13 @@ impl Tensor {
     /// - returns `y`: `[batch, seq, d]`.
     ///
     /// Exact forward and exact backward (reverse scan). This is the core of the Mamba block.
-    pub fn selective_scan(delta: &Tensor, b_vec: &Tensor, c_vec: &Tensor, u: &Tensor, a: &Tensor) -> Tensor {
+    pub fn selective_scan(
+        delta: &Tensor,
+        b_vec: &Tensor,
+        c_vec: &Tensor,
+        u: &Tensor,
+        a: &Tensor,
+    ) -> Tensor {
         let dd = delta.data();
         let bd = b_vec.data();
         let cd = c_vec.data();
@@ -636,7 +703,10 @@ impl Tensor {
         let id = input.data();
         let wd = weight.data();
         let ishape = id.shape();
-        assert!(ishape.len() == 3, "conv1d_causal: input must be [batch, seq, channels]");
+        assert!(
+            ishape.len() == 3,
+            "conv1d_causal: input must be [batch, seq, channels]"
+        );
         let (batch, seq, channels) = (ishape[0], ishape[1], ishape[2]);
         let wshape = wd.shape();
         assert!(
@@ -662,7 +732,8 @@ impl Tensor {
             }
         }
 
-        let requires_grad = input.0.read().unwrap().requires_grad || weight.0.read().unwrap().requires_grad;
+        let requires_grad =
+            input.0.read().unwrap().requires_grad || weight.0.read().unwrap().requires_grad;
         let res = Tensor::new(out, requires_grad);
         if requires_grad {
             res.0.write().unwrap().creator =
@@ -694,7 +765,12 @@ impl Tensor {
     /// differentiable (backward `grad * sig * (1 - sig)`).
     pub fn sigmoid(&self) -> Tensor {
         let data = self.0.read().unwrap().data.mapv(|v| {
-            if v >= 0.0 { 1.0 / (1.0 + (-v).exp()) } else { let e = v.exp(); e / (1.0 + e) }
+            if v >= 0.0 {
+                1.0 / (1.0 + (-v).exp())
+            } else {
+                let e = v.exp();
+                e / (1.0 + e)
+            }
         });
         let res = Tensor::new(data, self.0.read().unwrap().requires_grad);
         if self.0.read().unwrap().requires_grad {
@@ -774,8 +850,12 @@ impl Tensor {
             || beta.0.read().unwrap().requires_grad;
         let res = Tensor::new(out, requires_grad);
         if requires_grad {
-            res.0.write().unwrap().creator =
-                Some(Arc::new(Op::LayerNorm(self.clone(), gamma.clone(), beta.clone(), eps)));
+            res.0.write().unwrap().creator = Some(Arc::new(Op::LayerNorm(
+                self.clone(),
+                gamma.clone(),
+                beta.clone(),
+                eps,
+            )));
         }
         res
     }
@@ -799,7 +879,11 @@ impl Tensor {
         assert!(!shape.is_empty(), "apply_rope: input must be non-scalar");
         let dim = *shape.last().unwrap();
         assert_eq!(dim, half_dim * 2, "apply_rope: dim must be 2*half_dim");
-        let seq = if shape.len() >= 2 { shape[shape.len() - 2] } else { 1 };
+        let seq = if shape.len() >= 2 {
+            shape[shape.len() - 2]
+        } else {
+            1
+        };
         assert_eq!(cos.len(), seq * dim, "apply_rope: cos table size mismatch");
         assert_eq!(sin.len(), seq * dim, "apply_rope: sin table size mismatch");
 
@@ -818,7 +902,8 @@ impl Tensor {
                     // out[i] = x[i]*cos[i] + (-x[half+i])*sin[i] = x[i]*cos[i] - xj*sin[i]
                     out[xbase + i] = xi * cos_row[i] - xj * sin_row[i];
                     // out[half+i] = xj*cos[half+i] + xi*sin[half+i]
-                    out[xbase + half_dim + i] = xj * cos_row[half_dim + i] + xi * sin_row[half_dim + i];
+                    out[xbase + half_dim + i] =
+                        xj * cos_row[half_dim + i] + xi * sin_row[half_dim + i];
                 }
             }
         }
@@ -827,8 +912,12 @@ impl Tensor {
         let requires_grad = x.0.read().unwrap().requires_grad;
         let res = Tensor::new(out_arr, requires_grad);
         if requires_grad {
-            res.0.write().unwrap().creator =
-                Some(Arc::new(Op::Rope(x.clone(), cos.to_vec(), sin.to_vec(), half_dim)));
+            res.0.write().unwrap().creator = Some(Arc::new(Op::Rope(
+                x.clone(),
+                cos.to_vec(),
+                sin.to_vec(),
+                half_dim,
+            )));
         }
         res
     }
@@ -858,8 +947,16 @@ impl Tensor {
     /// Returns nodes in reverse-topological order (root first, leaves last) so that when
     /// we process a node, all gradients flowing into it have already been accumulated.
     /// Uses an explicit stack (no recursion → no stack overflow on deep graphs).
+    ///
+    /// The `discovered` set is the key to making this **O(V+E)** rather than O(#paths): in a
+    /// DAG with shared subgraphs (residual connections, weight tying, multi-term losses) a node
+    /// can be reachable along many paths. Marking a node discovered the *first* time it is seen
+    /// guarantees its children are pushed exactly once. The earlier version re-pushed children
+    /// on every path, which exploded exponentially for deep shared graphs and dominated the
+    /// per-step backward cost of such models.
     fn topo_sort(&self) -> Vec<Tensor> {
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::new(); // nodes already post-ordered
+        let mut discovered = HashSet::new(); // nodes whose children have been pushed (once)
         let mut post_order = Vec::new();
         let mut stack: Vec<(Tensor, bool)> = vec![(self.clone(), false)];
 
@@ -872,6 +969,10 @@ impl Tensor {
                 visited.insert(tid);
                 post_order.push(t);
             } else {
+                // Push this node's children at most once: the first discovery wins.
+                if !discovered.insert(tid) {
+                    continue;
+                }
                 stack.push((t.clone(), true));
                 let children: Vec<Tensor> = {
                     let inner = t.0.read().unwrap();
@@ -908,29 +1009,30 @@ impl Tensor {
 
         for node in &topo {
             let nid = node.id();
-            let Some(grad) = grad_map.remove(&nid) else { continue };
-
-            // Store the accumulated gradient into the node.
-            {
-                let mut inner = node.0.write().unwrap();
-                if let Some(ref mut g) = inner.grad {
-                    *g += &grad;
-                } else {
-                    inner.grad = Some(grad.clone());
-                }
-            }
+            let Some(grad) = grad_map.remove(&nid) else {
+                continue;
+            };
 
             // Read the creator op (clone the Arc to release the read lock before matching).
             let creator = node.0.read().unwrap().creator.clone();
-            let Some(op) = creator else { continue };
+            let Some(op) = creator else {
+                // Leaf node (parameter / input): store its gradient, MOVING `grad` (no clone).
+                let mut inner = node.0.write().unwrap();
+                if let Some(g) = inner.grad.as_mut() {
+                    *g += &grad;
+                } else {
+                    inner.grad = Some(grad);
+                }
+                continue;
+            };
 
             // Helper closure to accumulate a gradient into the map for a given tensor.
-            let acc = |map: &mut HashMap<usize, ArrayD<f32>>, t: &Tensor, g: ArrayD<f32>| {
-                match map.get_mut(&t.id()) {
-                    Some(e) => *e += &g,
-                    None => {
-                        map.insert(t.id(), g);
-                    }
+            let acc = |map: &mut HashMap<usize, ArrayD<f32>>, t: &Tensor, g: ArrayD<f32>| match map
+                .get_mut(&t.id())
+            {
+                Some(e) => *e += &g,
+                None => {
+                    map.insert(t.id(), g);
                 }
             };
 
@@ -968,16 +1070,80 @@ impl Tensor {
                     }
                 }
                 Op::MatMul(a, b) => {
-                    let a_data = a.0.read().unwrap().data.clone().into_dimensionality::<ndarray::Ix2>().unwrap();
-                    let b_data = b.0.read().unwrap().data.clone().into_dimensionality::<ndarray::Ix2>().unwrap();
-                    let grad_2d = grad.clone().into_dimensionality::<ndarray::Ix2>().unwrap();
+                    // Gradient rules: A is [m,k], B is [k,n], upstream grad (∂L/∂C) is [m,n].
+                    //   ∂L/∂A = ∂L/∂C · Bᵀ   →  a transposed-B GEMM (no copy of B)
+                    //   ∂L/∂B = Aᵀ · ∂L/∂C    →  a transposed-A GEMM (no copy of A)
+                    // Both go through the packed BLAS kernel via transpose flags instead of the
+                    // old `grad.dot(&b.t())` which (a) built a transposed view and (b) ran the
+                    // naïve ndarray dot — the dominant per-step cost in training. The BLAS path
+                    // packs the transposed operand into a contiguous panel and never allocates a
+                    // full transpose.
+                    let a_data =
+                        a.0.read()
+                            .unwrap()
+                            .data
+                            .clone()
+                            .into_dimensionality::<ndarray::Ix2>()
+                            .unwrap();
+                    let b_data =
+                        b.0.read()
+                            .unwrap()
+                            .data
+                            .clone()
+                            .into_dimensionality::<ndarray::Ix2>()
+                            .unwrap();
+                    let (m, k) = (a_data.shape()[0], a_data.shape()[1]);
+                    let n = b_data.shape()[1];
+                    let a_flat: Vec<f32> = a_data.iter().copied().collect();
+                    let b_flat: Vec<f32> = b_data.iter().copied().collect();
+                    let g_flat: Vec<f32> = grad.iter().copied().collect(); // grad is [m, n]
                     if a.requires_grad() {
-                        let da = grad_2d.dot(&b_data.t()).into_dyn();
-                        acc(&mut grad_map, a, da);
+                        let mut da = vec![0.0f32; m * k];
+                        // dA[m,k] = grad[m,n] · Bᵀ[n,k]   (B stored [k,n], transb=Trans, ldb=n)
+                        crate::blas::sgemm(
+                            crate::blas::Transpose::NoTrans,
+                            crate::blas::Transpose::Trans,
+                            m,
+                            k,
+                            n,
+                            1.0,
+                            &g_flat,
+                            n,
+                            &b_flat,
+                            n,
+                            0.0,
+                            &mut da,
+                            k,
+                        );
+                        acc(
+                            &mut grad_map,
+                            a,
+                            ArrayD::from_shape_vec(IxDyn(&[m, k]), da).unwrap(),
+                        );
                     }
                     if b.requires_grad() {
-                        let db = a_data.t().dot(&grad_2d).into_dyn();
-                        acc(&mut grad_map, b, db);
+                        let mut db = vec![0.0f32; k * n];
+                        // dB[k,n] = Aᵀ[k,m] · grad[m,n]   (A stored [m,k], transa=Trans, lda=k)
+                        crate::blas::sgemm(
+                            crate::blas::Transpose::Trans,
+                            crate::blas::Transpose::NoTrans,
+                            k,
+                            n,
+                            m,
+                            1.0,
+                            &a_flat,
+                            k,
+                            &g_flat,
+                            n,
+                            0.0,
+                            &mut db,
+                            n,
+                        );
+                        acc(
+                            &mut grad_map,
+                            b,
+                            ArrayD::from_shape_vec(IxDyn(&[k, n]), db).unwrap(),
+                        );
                     }
                 }
                 Op::ReLU(a) => {
@@ -989,7 +1155,11 @@ impl Tensor {
                 }
                 Op::Reshape(a, original_shape) => {
                     if a.requires_grad() {
-                        acc(&mut grad_map, a, grad.clone().into_shape(IxDyn(original_shape)).unwrap());
+                        acc(
+                            &mut grad_map,
+                            a,
+                            grad.clone().into_shape(IxDyn(original_shape)).unwrap(),
+                        );
                     }
                 }
                 Op::Transpose(a) => {
@@ -1000,7 +1170,8 @@ impl Tensor {
                 Op::Sum(a, _) => {
                     if a.requires_grad() {
                         let a_shape = a.shape();
-                        let a_grad = ArrayD::from_elem(IxDyn(&a_shape), *grad.first().unwrap_or(&0.0));
+                        let a_grad =
+                            ArrayD::from_elem(IxDyn(&a_shape), *grad.first().unwrap_or(&0.0));
                         acc(&mut grad_map, a, a_grad);
                     }
                 }
@@ -1032,10 +1203,14 @@ impl Tensor {
                         let t = target.0.read().unwrap().data.clone();
                         let n = p.len() as f32;
                         let scale = grad.first().copied().unwrap_or(1.0) / n;
-                        let dp = p.iter().zip(t.iter()).map(|(&pp, &z)| {
-                            let pp = pp.clamp(1e-12, 1.0 - 1e-12);
-                            (pp - z) / (pp * (1.0 - pp))
-                        }).collect::<Vec<_>>();
+                        let dp = p
+                            .iter()
+                            .zip(t.iter())
+                            .map(|(&pp, &z)| {
+                                let pp = pp.clamp(1e-12, 1.0 - 1e-12);
+                                (pp - z) / (pp * (1.0 - pp))
+                            })
+                            .collect::<Vec<_>>();
                         let mut ga = ArrayD::from_shape_vec(IxDyn(p.shape()), dp).unwrap();
                         ga.mapv_inplace(|x| x * scale);
                         acc(&mut grad_map, probs_t, ga);
@@ -1047,8 +1222,18 @@ impl Tensor {
                         let t = target.0.read().unwrap().data.clone();
                         let n = p.len() as f32;
                         let scale = grad.first().copied().unwrap_or(1.0) / n;
-                        let dp = p.iter().zip(t.iter())
-                            .map(|(&a, &b)| if a > b { 1.0 } else if a < b { -1.0 } else { 0.0 })
+                        let dp = p
+                            .iter()
+                            .zip(t.iter())
+                            .map(|(&a, &b)| {
+                                if a > b {
+                                    1.0
+                                } else if a < b {
+                                    -1.0
+                                } else {
+                                    0.0
+                                }
+                            })
                             .collect::<Vec<_>>();
                         let mut ga = ArrayD::from_shape_vec(IxDyn(p.shape()), dp).unwrap();
                         ga.mapv_inplace(|x| x * scale);
@@ -1061,10 +1246,19 @@ impl Tensor {
                         let t = target.0.read().unwrap().data.clone();
                         let n = p.len() as f32;
                         let scale = grad.first().copied().unwrap_or(1.0) / n;
-                        let dp = p.iter().zip(t.iter()).map(|(&a, &b)| {
-                            let d = a - b; let ad = d.abs();
-                            if ad <= *delta { d } else { *delta * d.signum() }
-                        }).collect::<Vec<_>>();
+                        let dp = p
+                            .iter()
+                            .zip(t.iter())
+                            .map(|(&a, &b)| {
+                                let d = a - b;
+                                let ad = d.abs();
+                                if ad <= *delta {
+                                    d
+                                } else {
+                                    *delta * d.signum()
+                                }
+                            })
+                            .collect::<Vec<_>>();
                         let mut ga = ArrayD::from_shape_vec(IxDyn(p.shape()), dp).unwrap();
                         ga.mapv_inplace(|x| x * scale);
                         acc(&mut grad_map, pred, ga);
@@ -1080,9 +1274,21 @@ impl Tensor {
                     let q_rg = q.requires_grad();
                     let k_rg = k.requires_grad();
                     let v_rg = v.requires_grad();
-                    let mut dq = if q_rg { Some(ArrayD::zeros(IxDyn(shape))) } else { None };
-                    let mut dk = if k_rg { Some(ArrayD::zeros(IxDyn(shape))) } else { None };
-                    let mut dv = if v_rg { Some(ArrayD::zeros(IxDyn(shape))) } else { None };
+                    let mut dq = if q_rg {
+                        Some(ArrayD::zeros(IxDyn(shape)))
+                    } else {
+                        None
+                    };
+                    let mut dk = if k_rg {
+                        Some(ArrayD::zeros(IxDyn(shape)))
+                    } else {
+                        None
+                    };
+                    let mut dv = if v_rg {
+                        Some(ArrayD::zeros(IxDyn(shape)))
+                    } else {
+                        None
+                    };
                     for b in 0..batch {
                         let mut p_row = vec![0.0f32; seq];
                         for i in 0..seq {
@@ -1090,35 +1296,60 @@ impl Tensor {
                             let mut m = f32::NEG_INFINITY;
                             for j in 0..seq {
                                 let mut dot = 0.0f32;
-                                for t in 0..dim { dot += qd[[b, i, t]] * kd[[b, j, t]]; }
+                                for t in 0..dim {
+                                    dot += qd[[b, i, t]] * kd[[b, j, t]];
+                                }
                                 sv[j] = dot * *scale;
                                 m = m.max(sv[j]);
                             }
                             let mut z = 0.0f32;
-                            for (pj, sj) in p_row.iter_mut().zip(sv.iter()) { *pj = (sj - m).exp(); z += *pj; }
+                            for (pj, sj) in p_row.iter_mut().zip(sv.iter()) {
+                                *pj = (sj - m).exp();
+                                z += *pj;
+                            }
                             let inv = if z > 0.0 { 1.0 / z } else { 0.0 };
-                            for pj in p_row.iter_mut() { *pj *= inv; }
+                            for pj in p_row.iter_mut() {
+                                *pj *= inv;
+                            }
                             let mut dp = vec![0.0f32; seq];
                             for j in 0..seq {
                                 let mut acc2 = 0.0f32;
-                                for t in 0..dim { acc2 += incoming * vd[[b, j, t]]; }
+                                for t in 0..dim {
+                                    acc2 += incoming * vd[[b, j, t]];
+                                }
                                 dp[j] = acc2;
                             }
                             let mut dotp = 0.0f32;
-                            for (pj, dpj) in p_row.iter().zip(dp.iter()) { dotp += pj * dpj; }
-                            for j in 0..seq { dp[j] = p_row[j] * (dp[j] - dotp); }
+                            for (pj, dpj) in p_row.iter().zip(dp.iter()) {
+                                dotp += pj * dpj;
+                            }
+                            for j in 0..seq {
+                                dp[j] = p_row[j] * (dp[j] - dotp);
+                            }
                             for j in 0..seq {
                                 for t in 0..dim {
-                                    if let Some(ref mut g) = dv { g[[b, j, t]] += p_row[j] * incoming; }
-                                    if let Some(ref mut gq) = dq { gq[[b, i, t]] += dp[j] * *scale * kd[[b, j, t]]; }
-                                    if let Some(ref mut gk) = dk { gk[[b, j, t]] += dp[j] * *scale * qd[[b, i, t]]; }
+                                    if let Some(ref mut g) = dv {
+                                        g[[b, j, t]] += p_row[j] * incoming;
+                                    }
+                                    if let Some(ref mut gq) = dq {
+                                        gq[[b, i, t]] += dp[j] * *scale * kd[[b, j, t]];
+                                    }
+                                    if let Some(ref mut gk) = dk {
+                                        gk[[b, j, t]] += dp[j] * *scale * qd[[b, i, t]];
+                                    }
                                 }
                             }
                         }
                     }
-                    if let Some(g) = dq { acc(&mut grad_map, q, g); }
-                    if let Some(g) = dk { acc(&mut grad_map, k, g); }
-                    if let Some(g) = dv { acc(&mut grad_map, v, g); }
+                    if let Some(g) = dq {
+                        acc(&mut grad_map, q, g);
+                    }
+                    if let Some(g) = dk {
+                        acc(&mut grad_map, k, g);
+                    }
+                    if let Some(g) = dv {
+                        acc(&mut grad_map, v, g);
+                    }
                 }
                 Op::SelectiveScan(delta, b_vec, c_vec, u, a) => {
                     let dy = &grad;
@@ -1130,22 +1361,47 @@ impl Tensor {
                     let dshape = dd.shape();
                     let (batch, seq, dim) = (dshape[0], dshape[1], dshape[2]);
                     let n = bd.shape()[bd.shape().len() - 1];
-                    let d_rg = delta.requires_grad(); let b_rg = b_vec.requires_grad();
-                    let c_rg = c_vec.requires_grad(); let u_rg = u.requires_grad(); let a_rg = a.requires_grad();
-                    let mut g_delta = if d_rg { Some(ArrayD::zeros(IxDyn(&[batch, seq, dim]))) } else { None };
-                    let mut g_b = if b_rg { Some(ArrayD::zeros(IxDyn(&[batch, seq, n]))) } else { None };
-                    let mut g_c = if c_rg { Some(ArrayD::zeros(IxDyn(&[batch, seq, n]))) } else { None };
-                    let mut g_u = if u_rg { Some(ArrayD::zeros(IxDyn(&[batch, seq, dim]))) } else { None };
-                    let mut g_a = if a_rg { Some(ArrayD::zeros(IxDyn(&[dim, n]))) } else { None };
+                    let d_rg = delta.requires_grad();
+                    let b_rg = b_vec.requires_grad();
+                    let c_rg = c_vec.requires_grad();
+                    let u_rg = u.requires_grad();
+                    let a_rg = a.requires_grad();
+                    let mut g_delta = if d_rg {
+                        Some(ArrayD::zeros(IxDyn(&[batch, seq, dim])))
+                    } else {
+                        None
+                    };
+                    let mut g_b = if b_rg {
+                        Some(ArrayD::zeros(IxDyn(&[batch, seq, n])))
+                    } else {
+                        None
+                    };
+                    let mut g_c = if c_rg {
+                        Some(ArrayD::zeros(IxDyn(&[batch, seq, n])))
+                    } else {
+                        None
+                    };
+                    let mut g_u = if u_rg {
+                        Some(ArrayD::zeros(IxDyn(&[batch, seq, dim])))
+                    } else {
+                        None
+                    };
+                    let mut g_a = if a_rg {
+                        Some(ArrayD::zeros(IxDyn(&[dim, n])))
+                    } else {
+                        None
+                    };
                     for b in 0..batch {
                         let mut h = vec![0.0f32; dim * n];
                         let mut states: Vec<Vec<f32>> = Vec::with_capacity(seq + 1);
                         states.push(h.clone());
                         for t in 0..seq {
                             for d in 0..dim {
-                                let dt = dd[[b, t, d]]; let ut = ud[[b, t, d]];
+                                let dt = dd[[b, t, d]];
+                                let ut = ud[[b, t, d]];
                                 for j in 0..n {
-                                    let abar = (dt * ad[[d, j]]).exp(); let bbar = dt * bd[[b, t, j]];
+                                    let abar = (dt * ad[[d, j]]).exp();
+                                    let bbar = dt * bd[[b, t, j]];
                                     h[d * n + j] = abar * h[d * n + j] + bbar * ut;
                                 }
                             }
@@ -1153,31 +1409,57 @@ impl Tensor {
                         }
                         let mut g = vec![0.0f32; dim * n];
                         for t in (0..seq).rev() {
-                            let h_prev = &states[t]; let h_cur = &states[t + 1];
+                            let h_prev = &states[t];
+                            let h_cur = &states[t + 1];
                             for d in 0..dim {
-                                let dt = dd[[b, t, d]]; let ut = ud[[b, t, d]];
+                                let dt = dd[[b, t, d]];
+                                let ut = ud[[b, t, d]];
                                 let dyt = dy[[b, t, d]];
-                                for j in 0..n { g[d * n + j] += dyt * cd[[b, t, j]]; }
                                 for j in 0..n {
-                                    let abar = (dt * ad[[d, j]]).exp(); let bbar = dt * bd[[b, t, j]];
-                                    let gt = g[d * n + j]; let hp = h_prev[d * n + j]; let hc = h_cur[d * n + j];
-                                    if let Some(ref mut gc) = g_c { gc[[b, t, j]] += dyt * hc; }
-                                    if let Some(ref mut gu) = g_u { gu[[b, t, d]] += gt * bbar; }
-                                    if let Some(ref mut gb) = g_b { gb[[b, t, j]] += gt * ut * dt; }
-                                    if let Some(ref mut gd) = g_delta {
-                                        gd[[b, t, d]] += gt * hp * abar * ad[[d, j]] + gt * ut * bd[[b, t, j]];
+                                    g[d * n + j] += dyt * cd[[b, t, j]];
+                                }
+                                for j in 0..n {
+                                    let abar = (dt * ad[[d, j]]).exp();
+                                    let bbar = dt * bd[[b, t, j]];
+                                    let gt = g[d * n + j];
+                                    let hp = h_prev[d * n + j];
+                                    let hc = h_cur[d * n + j];
+                                    if let Some(ref mut gc) = g_c {
+                                        gc[[b, t, j]] += dyt * hc;
                                     }
-                                    if let Some(ref mut ga) = g_a { ga[[d, j]] += gt * hp * abar * dt; }
+                                    if let Some(ref mut gu) = g_u {
+                                        gu[[b, t, d]] += gt * bbar;
+                                    }
+                                    if let Some(ref mut gb) = g_b {
+                                        gb[[b, t, j]] += gt * ut * dt;
+                                    }
+                                    if let Some(ref mut gd) = g_delta {
+                                        gd[[b, t, d]] +=
+                                            gt * hp * abar * ad[[d, j]] + gt * ut * bd[[b, t, j]];
+                                    }
+                                    if let Some(ref mut ga) = g_a {
+                                        ga[[d, j]] += gt * hp * abar * dt;
+                                    }
                                     g[d * n + j] = gt * abar;
                                 }
                             }
                         }
                     }
-                    if let Some(g) = g_delta { acc(&mut grad_map, delta, g); }
-                    if let Some(g) = g_b { acc(&mut grad_map, b_vec, g); }
-                    if let Some(g) = g_c { acc(&mut grad_map, c_vec, g); }
-                    if let Some(g) = g_u { acc(&mut grad_map, u, g); }
-                    if let Some(g) = g_a { acc(&mut grad_map, a, g); }
+                    if let Some(g) = g_delta {
+                        acc(&mut grad_map, delta, g);
+                    }
+                    if let Some(g) = g_b {
+                        acc(&mut grad_map, b_vec, g);
+                    }
+                    if let Some(g) = g_c {
+                        acc(&mut grad_map, c_vec, g);
+                    }
+                    if let Some(g) = g_u {
+                        acc(&mut grad_map, u, g);
+                    }
+                    if let Some(g) = g_a {
+                        acc(&mut grad_map, a, g);
+                    }
                 }
                 Op::Conv1DCausal(input, weight) => {
                     let id = input.0.read().unwrap().data.clone();
@@ -1185,9 +1467,18 @@ impl Tensor {
                     let ishape = id.shape();
                     let (batch, seq, channels) = (ishape[0], ishape[1], ishape[2]);
                     let kernel = wd.shape()[1];
-                    let i_rg = input.requires_grad(); let w_rg = weight.requires_grad();
-                    let mut g_in = if i_rg { Some(ArrayD::zeros(IxDyn(ishape))) } else { None };
-                    let mut g_w = if w_rg { Some(ArrayD::zeros(IxDyn(wd.shape()))) } else { None };
+                    let i_rg = input.requires_grad();
+                    let w_rg = weight.requires_grad();
+                    let mut g_in = if i_rg {
+                        Some(ArrayD::zeros(IxDyn(ishape)))
+                    } else {
+                        None
+                    };
+                    let mut g_w = if w_rg {
+                        Some(ArrayD::zeros(IxDyn(wd.shape())))
+                    } else {
+                        None
+                    };
                     for b in 0..batch {
                         for t in 0..seq {
                             for c in 0..channels {
@@ -1196,21 +1487,34 @@ impl Tensor {
                                     let si = t as isize - kernel as isize + 1 + i as isize;
                                     if si >= 0 {
                                         let su = si as usize;
-                                        if let Some(ref mut gi) = g_in { gi[[b, su, c]] += gout * wd[[c, i]]; }
-                                        if let Some(ref mut gw) = g_w { gw[[c, i]] += gout * id[[b, su, c]]; }
+                                        if let Some(ref mut gi) = g_in {
+                                            gi[[b, su, c]] += gout * wd[[c, i]];
+                                        }
+                                        if let Some(ref mut gw) = g_w {
+                                            gw[[c, i]] += gout * id[[b, su, c]];
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                    if let Some(g) = g_in { acc(&mut grad_map, input, g); }
-                    if let Some(g) = g_w { acc(&mut grad_map, weight, g); }
+                    if let Some(g) = g_in {
+                        acc(&mut grad_map, input, g);
+                    }
+                    if let Some(g) = g_w {
+                        acc(&mut grad_map, weight, g);
+                    }
                 }
                 Op::Softplus(x) => {
                     if x.requires_grad() {
                         let xd = x.0.read().unwrap().data.clone();
                         let sig = xd.mapv(|v| {
-                            if v >= 0.0 { 1.0 / (1.0 + (-v).exp()) } else { let e = v.exp(); e / (1.0 + e) }
+                            if v >= 0.0 {
+                                1.0 / (1.0 + (-v).exp())
+                            } else {
+                                let e = v.exp();
+                                e / (1.0 + e)
+                            }
                         });
                         acc(&mut grad_map, x, &grad * &sig);
                     }
@@ -1219,7 +1523,12 @@ impl Tensor {
                     if x.requires_grad() {
                         let xd = x.0.read().unwrap().data.clone();
                         let sig = xd.mapv(|v| {
-                            if v >= 0.0 { 1.0 / (1.0 + (-v).exp()) } else { let e = v.exp(); e / (1.0 + e) }
+                            if v >= 0.0 {
+                                1.0 / (1.0 + (-v).exp())
+                            } else {
+                                let e = v.exp();
+                                e / (1.0 + e)
+                            }
                         });
                         acc(&mut grad_map, x, &grad * &sig * &(1.0 - &sig));
                     }
@@ -1227,7 +1536,9 @@ impl Tensor {
                 Op::Permute(input, axes) => {
                     if input.requires_grad() {
                         let mut inv = vec![0usize; axes.len()];
-                        for (i, &a) in axes.iter().enumerate() { inv[a] = i; }
+                        for (i, &a) in axes.iter().enumerate() {
+                            inv[a] = i;
+                        }
                         let permuted = grad.clone().permuted_axes(IxDyn(&inv));
                         let flat: Vec<f32> = permuted.iter().copied().collect();
                         let contig = ArrayD::from_shape_vec(IxDyn(permuted.shape()), flat).unwrap();
@@ -1249,14 +1560,21 @@ impl Tensor {
                     for row in 0..nrows {
                         let base = row * n;
                         let mut mean = 0.0f32;
-                        for j in 0..n { mean += data[base + j]; }
+                        for j in 0..n {
+                            mean += data[base + j];
+                        }
                         mean /= n as f32;
                         let mut var = 0.0f32;
-                        for j in 0..n { let d = data[base + j] - mean; var += d * d; }
+                        for j in 0..n {
+                            let d = data[base + j] - mean;
+                            var += d * d;
+                        }
                         var /= n as f32;
                         let inv_std = 1.0 / (var + eps).sqrt();
                         inv_stds[row] = inv_std;
-                        for j in 0..n { x_hat[base + j] = (data[base + j] - mean) * inv_std; }
+                        for j in 0..n {
+                            x_hat[base + j] = (data[base + j] - mean) * inv_std;
+                        }
                     }
                     let in_rg = input.requires_grad();
                     let g_rg = gamma.requires_grad();
@@ -1266,25 +1584,39 @@ impl Tensor {
                         #[allow(clippy::needless_range_loop)]
                         for row in 0..nrows {
                             let base = row * n;
-                            for j in 0..n { dgamma[j] += grad_flat[base + j] * x_hat[base + j]; }
+                            for j in 0..n {
+                                dgamma[j] += grad_flat[base + j] * x_hat[base + j];
+                            }
                         }
-                        acc(&mut grad_map, gamma, ArrayD::from_shape_vec(IxDyn(&[n]), dgamma).unwrap());
+                        acc(
+                            &mut grad_map,
+                            gamma,
+                            ArrayD::from_shape_vec(IxDyn(&[n]), dgamma).unwrap(),
+                        );
                     }
                     if b_rg {
                         let mut dbeta = vec![0.0f32; n];
                         #[allow(clippy::needless_range_loop)]
                         for row in 0..nrows {
                             let base = row * n;
-                            for j in 0..n { dbeta[j] += grad_flat[base + j]; }
+                            for j in 0..n {
+                                dbeta[j] += grad_flat[base + j];
+                            }
                         }
-                        acc(&mut grad_map, beta, ArrayD::from_shape_vec(IxDyn(&[n]), dbeta).unwrap());
+                        acc(
+                            &mut grad_map,
+                            beta,
+                            ArrayD::from_shape_vec(IxDyn(&[n]), dbeta).unwrap(),
+                        );
                     }
                     if in_rg {
                         let mut dx_hat = vec![0.0f32; shape];
                         #[allow(clippy::needless_range_loop)]
                         for row in 0..nrows {
                             let base = row * n;
-                            for j in 0..n { dx_hat[base + j] = grad_flat[base + j] * gd[j]; }
+                            for j in 0..n {
+                                dx_hat[base + j] = grad_flat[base + j] * gd[j];
+                            }
                         }
                         let mut dx = vec![0.0f32; shape];
                         #[allow(clippy::needless_range_loop)]
@@ -1299,20 +1631,41 @@ impl Tensor {
                             let inv = inv_stds[row] / n as f32;
                             for j in 0..n {
                                 dx[base + j] = inv
-                                    * (n as f32 * dx_hat[base + j] - sum_dxh - x_hat[base + j] * sum_dxh_xh);
+                                    * (n as f32 * dx_hat[base + j]
+                                        - sum_dxh
+                                        - x_hat[base + j] * sum_dxh_xh);
                             }
                         }
-                        acc(&mut grad_map, input, ArrayD::from_shape_vec(IxDyn(&data_shape), dx).unwrap());
+                        acc(
+                            &mut grad_map,
+                            input,
+                            ArrayD::from_shape_vec(IxDyn(&data_shape), dx).unwrap(),
+                        );
                     }
                 }
                 Op::Rope(x, cos, sin, half_dim) => {
                     if x.requires_grad() {
                         let neg_sin: Vec<f32> = sin.iter().map(|&sv| -sv).collect();
                         let dx = Tensor::apply_rope(
-                            &Tensor::new(grad.clone(), false), cos, &neg_sin, *half_dim,
+                            &Tensor::new(grad.clone(), false),
+                            cos,
+                            &neg_sin,
+                            *half_dim,
                         );
                         acc(&mut grad_map, x, dx.data());
                     }
+                }
+            }
+
+            // Finally, store this node's own accumulated gradient by MOVING `grad` (no clone).
+            // Previously this ran first with a `grad.clone()` on every node whose gradient buffer
+            // did not yet exist; computing child gradients first lets us move here instead.
+            {
+                let mut inner = node.0.write().unwrap();
+                if let Some(g) = inner.grad.as_mut() {
+                    *g += &grad;
+                } else {
+                    inner.grad = Some(grad);
                 }
             }
         }
@@ -1381,7 +1734,10 @@ impl Tensor {
 
     /// Read a single element by its (flattened) linear index.
     pub fn get_idx(&self, index: usize) -> f32 {
-        self.0.read().unwrap().data
+        self.0
+            .read()
+            .unwrap()
+            .data
             .iter()
             .nth(index)
             .copied()

@@ -7,7 +7,10 @@ use rust_nn::optim::{Adam, Optimizer};
 use rust_nn::tensor::Tensor;
 
 fn leaf(data: &[f32], shape: &[usize]) -> Tensor {
-    Tensor::new(ArrayD::from_shape_vec(IxDyn(shape), data.to_vec()).unwrap(), true)
+    Tensor::new(
+        ArrayD::from_shape_vec(IxDyn(shape), data.to_vec()).unwrap(),
+        true,
+    )
 }
 
 // ==================== permute ====================
@@ -49,8 +52,22 @@ fn permute_backward_matches_numeric() {
         let mut lo = base.to_vec();
         hi[i] += eps;
         lo[i] -= eps;
-        let l_hi = leaf(&hi, &shape).permute(&[1, 0]).sum().data().iter().copied().next().unwrap();
-        let l_lo = leaf(&lo, &shape).permute(&[1, 0]).sum().data().iter().copied().next().unwrap();
+        let l_hi = leaf(&hi, &shape)
+            .permute(&[1, 0])
+            .sum()
+            .data()
+            .iter()
+            .copied()
+            .next()
+            .unwrap();
+        let l_lo = leaf(&lo, &shape)
+            .permute(&[1, 0])
+            .sum()
+            .data()
+            .iter()
+            .copied()
+            .next()
+            .unwrap();
         let num = (l_hi - l_lo) / (2.0 * eps);
         max_diff = max_diff.max((num - analytic[i]).abs());
     }
@@ -68,7 +85,10 @@ fn layernorm_normalizes_last_axis() {
     // Each row should have ~0 mean and ~1 std after normalization (before affine; gamma=1, beta=0).
     let yd: Vec<f32> = y.data().iter().copied().collect();
     let row0_mean = (yd[0] + yd[1] + yd[2] + yd[3]) / 4.0;
-    assert!(row0_mean.abs() < 1e-4, "row 0 mean should be ~0: {row0_mean}");
+    assert!(
+        row0_mean.abs() < 1e-4,
+        "row 0 mean should be ~0: {row0_mean}"
+    );
 }
 
 #[test]
@@ -90,13 +110,30 @@ fn layernorm_grad_matches_numeric() {
         let mut lo = base.to_vec();
         hi[i] += eps;
         lo[i] -= eps;
-        let l_hi = leaf(&hi, &shape).layer_norm(&gamma, &beta, 1e-5).sum().data().iter().copied().next().unwrap();
-        let l_lo = leaf(&lo, &shape).layer_norm(&gamma, &beta, 1e-5).sum().data().iter().copied().next().unwrap();
+        let l_hi = leaf(&hi, &shape)
+            .layer_norm(&gamma, &beta, 1e-5)
+            .sum()
+            .data()
+            .iter()
+            .copied()
+            .next()
+            .unwrap();
+        let l_lo = leaf(&lo, &shape)
+            .layer_norm(&gamma, &beta, 1e-5)
+            .sum()
+            .data()
+            .iter()
+            .copied()
+            .next()
+            .unwrap();
         let num = (l_hi - l_lo) / (2.0 * eps);
         max_diff = max_diff.max((num - analytic[i]).abs());
     }
     println!("layernorm input-grad max diff: {max_diff:.2e}");
-    assert!(max_diff < 1e-2, "layernorm gradient mismatch: {max_diff:.2e}");
+    assert!(
+        max_diff < 1e-2,
+        "layernorm gradient mismatch: {max_diff:.2e}"
+    );
 }
 
 #[test]
@@ -106,7 +143,10 @@ fn layernorm_gamma_grad_nonzero() {
     let y = ln.forward(&x);
     y.sum().backward();
     let ggrad = ln.gamma.grad().expect("no gamma grad");
-    assert!(ggrad.iter().any(|&g| g.abs() > 1e-6), "gamma gradients should be non-zero");
+    assert!(
+        ggrad.iter().any(|&g| g.abs() > 1e-6),
+        "gamma gradients should be non-zero"
+    );
 }
 
 // ==================== Multi-Head Attention ====================
@@ -134,13 +174,18 @@ fn mha_single_head_matches_attention() {
 fn mha_is_differentiable() {
     let mha = MultiHeadAttention::new(8, 2);
     let x = leaf(
-        &(0..2 * 3 * 8).map(|i| (i as f32 * 0.01).sin()).collect::<Vec<_>>(),
+        &(0..2 * 3 * 8)
+            .map(|i| (i as f32 * 0.01).sin())
+            .collect::<Vec<_>>(),
         &[2, 3, 8],
     );
     let y = mha.forward(&x);
     y.sum().backward();
     let grad = x.grad().expect("MHA input received no gradient");
-    assert!(grad.iter().any(|&g| g.abs() > 0.0), "MHA gradients should be non-zero");
+    assert!(
+        grad.iter().any(|&g| g.abs() > 0.0),
+        "MHA gradients should be non-zero"
+    );
 }
 
 // ==================== Looped Transformer ====================
@@ -166,18 +211,21 @@ fn looped_transformer_is_differentiable() {
             );
             let y = model.forward(&x);
             y.sum().backward();
-            x.grad().expect("looped transformer input received no gradient")
+            x.grad()
+                .expect("looped transformer input received no gradient")
         })
         .unwrap();
     let grad = handle.join().unwrap();
-    assert!(grad.iter().any(|&g| g.abs() > 0.0), "gradients should flow through all loops");
+    assert!(
+        grad.iter().any(|&g| g.abs() > 0.0),
+        "gradients should flow through all loops"
+    );
 }
 
 #[test]
 fn looped_transformer_adaptive_halting_stops_early() {
     // With adaptive halting at threshold 0.0, the model should halt after step 0.
-    let model = LoopedTransformer::new(4, 8, 2, 16, 2, 10)
-        .with_adaptive_halting(0.0);
+    let model = LoopedTransformer::new(4, 8, 2, 16, 2, 10).with_adaptive_halting(0.0);
     let x = Tensor::randn(&[1, 3, 4]);
     let (y, loops) = model.forward_with_loops(&x);
     assert_eq!(y.shape(), vec![1, 3, 2]);
@@ -195,7 +243,10 @@ fn looped_transformer_fewer_params_than_standard() {
     let sp = standard.parameters().len();
     println!("looped param tensors: {lp}, standard param tensors: {sp}");
     // The looped model shares one block across 8 loops, so its param count should be much smaller.
-    assert!(lp < sp, "looped should have fewer param tensors than standard");
+    assert!(
+        lp < sp,
+        "looped should have fewer param tensors than standard"
+    );
 }
 
 #[test]
@@ -210,7 +261,9 @@ fn looped_transformer_learns_sequence_task() {
             let mut opt = Adam::new(model.parameters(), 0.01);
 
             let x = leaf(
-                &[0.3, -0.1, 0.5, 0.2, -0.4, 0.6, 0.1, -0.3, 0.2, 0.4, -0.5, 0.0],
+                &[
+                    0.3, -0.1, 0.5, 0.2, -0.4, 0.6, 0.1, -0.3, 0.2, 0.4, -0.5, 0.0,
+                ],
                 &[1, 3, 4],
             );
 
@@ -234,7 +287,10 @@ fn looped_transformer_learns_sequence_task() {
         .unwrap();
     let (first, last) = handle.join().unwrap();
     println!("looped transformer: first={first:.4} last={last:.4}");
-    assert!(last < first, "loss should decrease ({last:.4} >= {first:.4})");
+    assert!(
+        last < first,
+        "loss should decrease ({last:.4} >= {first:.4})"
+    );
 }
 
 #[test]

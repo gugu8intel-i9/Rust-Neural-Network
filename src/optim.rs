@@ -89,14 +89,15 @@ impl Adam {
 impl Optimizer for Adam {
     fn step(&mut self) {
         self.t += 1;
-        let lr_t = self.lr * (1.0 - self.beta2.powi(self.t as i32)).sqrt() / (1.0 - self.beta1.powi(self.t as i32));
+        let lr_t = self.lr * (1.0 - self.beta2.powi(self.t as i32)).sqrt()
+            / (1.0 - self.beta1.powi(self.t as i32));
 
         for (i, param) in self.params.iter_mut().enumerate() {
             let mut inner = param.0.write().unwrap();
             if let Some(grad) = inner.grad.take() {
                 self.m[i] = &self.m[i] * self.beta1 + &grad * (1.0 - self.beta1);
                 self.v[i] = &self.v[i] * self.beta2 + (&grad * &grad) * (1.0 - self.beta2);
-                
+
                 let update = &self.m[i] / (self.v[i].mapv(|x| x.sqrt()) + self.eps);
                 inner.data -= &(update * lr_t);
             }

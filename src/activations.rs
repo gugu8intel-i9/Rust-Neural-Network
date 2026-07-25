@@ -55,7 +55,9 @@ pub fn softmax(x: &Tensor) -> Tensor {
         }
     }
 
-    let out = out.into_shape(ndarray::IxDyn(data.shape())).expect("softmax restore shape");
+    let out = out
+        .into_shape(ndarray::IxDyn(data.shape()))
+        .expect("softmax restore shape");
     Tensor::new(out, x.0.read().unwrap().requires_grad)
 }
 

@@ -1,6 +1,8 @@
 //! Production robustness tests: edge cases, error handling, and invalid-input rejection.
 
-use rust_nn::error::{checked_add, checked_matmul, checked_reshape, validate_ndims, validate_non_empty};
+use rust_nn::error::{
+    checked_add, checked_matmul, checked_reshape, validate_ndims, validate_non_empty,
+};
 use rust_nn::tensor::Tensor;
 
 // ==================== Checked operations ====================
@@ -34,7 +36,7 @@ fn checked_matmul_rejects_non_2d() {
 
 #[test]
 fn checked_reshape_rejects_count_mismatch() {
-    let t = Tensor::randn(&[2, 3]);  // 6 elements
+    let t = Tensor::randn(&[2, 3]); // 6 elements
     let result = checked_reshape(&t, &[4, 4]); // 16 elements
     assert!(result.is_err());
 }
@@ -57,7 +59,7 @@ fn checked_add_rejects_incompatible() {
 #[test]
 fn checked_add_allows_broadcast() {
     let a = Tensor::randn(&[4, 3]);
-    let b = Tensor::randn(&[3]);  // broadcastable
+    let b = Tensor::randn(&[3]); // broadcastable
     assert!(checked_add(&a, &b).is_ok());
 }
 
@@ -143,10 +145,16 @@ fn sigmoid_extreme_values() {
     let t = Tensor::from_vec(vec![-100.0, -1.0, 0.0, 1.0, 100.0], vec![5]);
     let s = t.sigmoid();
     let vals: Vec<f32> = s.data().iter().copied().collect();
-    assert!(vals[0] > 0.0 && vals[0] < 1e-40, "sigmoid(-100) should be ~0");
+    assert!(
+        vals[0] > 0.0 && vals[0] < 1e-40,
+        "sigmoid(-100) should be ~0"
+    );
     assert!((vals[2] - 0.5).abs() < 1e-6, "sigmoid(0) should be 0.5");
     assert!(vals[4] > 0.999, "sigmoid(100) should be ~1");
-    assert!(vals.iter().all(|v| v.is_finite()), "sigmoid should be finite for all inputs");
+    assert!(
+        vals.iter().all(|v| v.is_finite()),
+        "sigmoid should be finite for all inputs"
+    );
 }
 
 #[test]
@@ -172,7 +180,10 @@ fn softmax_sums_to_one() {
     let t = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5]);
     let s = rust_nn::activations::softmax(&t);
     let sum: f32 = s.data().iter().copied().sum();
-    assert!((sum - 1.0).abs() < 1e-5, "softmax should sum to 1.0, got {sum}");
+    assert!(
+        (sum - 1.0).abs() < 1e-5,
+        "softmax should sum to 1.0, got {sum}"
+    );
 }
 
 #[test]
@@ -180,7 +191,10 @@ fn softmax_extreme_values_stable() {
     let t = Tensor::from_vec(vec![-1000.0, 0.0, 1000.0], vec![3]);
     let s = rust_nn::activations::softmax(&t);
     let vals: Vec<f32> = s.data().iter().copied().collect();
-    assert!(vals.iter().all(|v| v.is_finite()), "softmax should be finite for extreme inputs");
+    assert!(
+        vals.iter().all(|v| v.is_finite()),
+        "softmax should be finite for extreme inputs"
+    );
     assert!(vals[0] < 1e-10, "softmax(-1000) should be ~0");
     assert!(vals[2] > 0.999, "softmax(1000) should be ~1");
 }
@@ -191,7 +205,10 @@ fn layer_norm_stable_with_extreme_input() {
     let ln = LayerNorm::new(4);
     let x = Tensor::from_vec(vec![1e10, -1e10, 1e-10, -1e-10], vec![1, 4]);
     let y = ln.forward(&x);
-    assert!(y.data().iter().all(|v| v.is_finite()), "layer_norm should be stable for extreme input");
+    assert!(
+        y.data().iter().all(|v| v.is_finite()),
+        "layer_norm should be stable for extreme input"
+    );
 }
 
 #[test]
@@ -201,7 +218,10 @@ fn cross_entropy_stable_with_large_logits() {
     let target = Tensor::from_vec(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0], vec![2, 3]);
     let loss = CrossEntropyLoss.forward(&logits, &target);
     let val = loss.data().iter().copied().next().unwrap();
-    assert!(val.is_finite(), "cross_entropy should be finite for large logits, got {val}");
+    assert!(
+        val.is_finite(),
+        "cross_entropy should be finite for large logits, got {val}"
+    );
 }
 
 // ==================== Serialization robustness ====================

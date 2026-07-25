@@ -14,7 +14,7 @@ pub struct Int8Weights {
     pub data: Vec<i8>,
     /// Per-output-channel scale: `weight_f32[i, :] = data[i, :] as f32 * scale[i]`.
     pub scales: Vec<f32>,
-    pub shape: Vec<usize>,  // [out_features, in_features]
+    pub shape: Vec<usize>, // [out_features, in_features]
 }
 
 impl Int8Weights {
@@ -44,7 +44,11 @@ impl Int8Weights {
             }
         }
 
-        Int8Weights { data: q_data, scales, shape }
+        Int8Weights {
+            data: q_data,
+            scales,
+            shape,
+        }
     }
 
     /// Dequantize back to f32.
@@ -99,7 +103,11 @@ impl Int8Weights {
         let dequant = self.dequantize();
         let orig: Vec<f32> = original.data().iter().copied().collect();
         let deq: Vec<f32> = dequant.data().iter().copied().collect();
-        let total_diff: f32 = orig.iter().zip(deq.iter()).map(|(a, b)| (a - b).abs()).sum();
+        let total_diff: f32 = orig
+            .iter()
+            .zip(deq.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
         total_diff / orig.len() as f32
     }
 }
@@ -107,7 +115,7 @@ impl Int8Weights {
 /// A quantized Linear layer for INT8 inference.
 #[derive(Debug)]
 pub struct Int8Linear {
-    pub int8_weight: Int8Weights,  // [out, in]
+    pub int8_weight: Int8Weights, // [out, in]
     pub bias: Option<Vec<f32>>,   // [out]
 }
 
@@ -115,9 +123,10 @@ impl Int8Linear {
     /// Quantize a Linear layer's weights to INT8 for inference.
     pub fn from_linear(layer: &crate::nn::Linear) -> Self {
         let int8_weight = Int8Weights::quantize(&layer.weight);
-        let bias = layer.bias.as_ref().map(|b| {
-            b.data().iter().copied().collect()
-        });
+        let bias = layer
+            .bias
+            .as_ref()
+            .map(|b| b.data().iter().copied().collect());
         Int8Linear { int8_weight, bias }
     }
 
@@ -125,7 +134,11 @@ impl Int8Linear {
     pub fn forward(&self, x: &Tensor) -> Tensor {
         let x_data = x.data();
         let x_shape = x_data.shape();
-        let batch = if x_shape.len() >= 2 { x_shape[x_shape.len() - 2] } else { 1 };
+        let batch = if x_shape.len() >= 2 {
+            x_shape[x_shape.len() - 2]
+        } else {
+            1
+        };
         let in_features = *x_shape.last().unwrap();
         let out_features = self.int8_weight.shape[0];
 
@@ -166,10 +179,7 @@ mod tests {
 
     #[test]
     fn int8_roundtrip_low_error() {
-        let weight = Tensor::from_vec(
-            vec![0.1, 0.2, 0.3, -0.4, 0.5, -0.6, 0.7, 0.8],
-            vec![2, 4],
-        );
+        let weight = Tensor::from_vec(vec![0.1, 0.2, 0.3, -0.4, 0.5, -0.6, 0.7, 0.8], vec![2, 4]);
         let q = Int8Weights::quantize(&weight);
         let error = q.quantization_error(&weight);
         assert!(error < 0.01, "quantization error too high: {error}");
@@ -206,10 +216,15 @@ mod tests {
         // Should be close (within quantization error).
         let f32_vals: Vec<f32> = y_f32.data().iter().copied().collect();
         let q_vals: Vec<f32> = y_int8.data().iter().copied().collect();
-        let max_diff: f32 = f32_vals.iter().zip(q_vals.iter())
+        let max_diff: f32 = f32_vals
+            .iter()
+            .zip(q_vals.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
-        assert!(max_diff < 5.0, "INT8 inference should be close to f32, max diff: {max_diff}");
+        assert!(
+            max_diff < 5.0,
+            "INT8 inference should be close to f32, max diff: {max_diff}"
+        );
     }
 
     #[test]

@@ -68,7 +68,10 @@ fn main() {
         let loss_val = loss.data().iter().copied().next().unwrap_or(0.0);
         running += loss_val;
         batch_count += 1;
-        println!("Batch {batch_count} - Loss: {:.6}", running / batch_count as f32);
+        println!(
+            "Batch {batch_count} - Loss: {:.6}",
+            running / batch_count as f32
+        );
     }
 
     println!("\n=== Library Usage Complete ===");

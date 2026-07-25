@@ -92,6 +92,11 @@ fn main() {
         }
     }
     let accuracy = correct as f32 / n as f32;
-    println!("\nTraining accuracy: {:.2}% ({}/{})", accuracy * 100.0, correct, n);
+    println!(
+        "\nTraining accuracy: {:.2}% ({}/{})",
+        accuracy * 100.0,
+        correct,
+        n
+    );
     println!("\n=== Example Complete ===");
 }

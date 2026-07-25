@@ -42,7 +42,9 @@ impl NoiseSchedule {
                 let beta_start = 0.0001;
                 let beta_end = 0.02;
                 (0..timesteps)
-                    .map(|i| beta_start + (beta_end - beta_start) * (i as f32) / ((timesteps - 1) as f32))
+                    .map(|i| {
+                        beta_start + (beta_end - beta_start) * (i as f32) / ((timesteps - 1) as f32)
+                    })
                     .collect()
             }
             ScheduleType::Cosine => {
@@ -128,7 +130,12 @@ impl DenoiseNet {
             .add(Linear::new(hidden_dim, hidden_dim, true))
             .add(SiLU)
             .add(Linear::new(hidden_dim, data_dim, true));
-        DenoiseNet { data_dim, time_embed_dim, time_proj, net }
+        DenoiseNet {
+            data_dim,
+            time_embed_dim,
+            time_proj,
+            net,
+        }
     }
 
     /// Predict the noise in `x_t` at timestep `t`. Returns a tensor shaped like `x_t`.
@@ -163,10 +170,19 @@ pub struct DDPM {
 
 impl DDPM {
     /// Create a DDPM over `data_dim`-dimensional data with `timesteps` denoising steps.
-    pub fn new(data_dim: usize, hidden_dim: usize, timesteps: usize, schedule: ScheduleType) -> Self {
+    pub fn new(
+        data_dim: usize,
+        hidden_dim: usize,
+        timesteps: usize,
+        schedule: ScheduleType,
+    ) -> Self {
         let schedule = NoiseSchedule::new(schedule, timesteps);
         let denoise = DenoiseNet::new(data_dim, hidden_dim, data_dim.clamp(16, 128));
-        DDPM { data_dim, schedule, denoise }
+        DDPM {
+            data_dim,
+            schedule,
+            denoise,
+        }
     }
 
     /// Forward (noising) process: `x_t = √ᾱ_t·x_0 + √(1−ᾱ_t)·ε`.
@@ -227,7 +243,8 @@ impl DDPM {
             let beta = self.schedule.betas[t];
 
             for i in 0..total {
-                let mean = (1.0 / alpha.sqrt()) * (x[i] - (beta / (1.0 - alpha_bar).sqrt()) * pn[i]);
+                let mean =
+                    (1.0 / alpha.sqrt()) * (x[i] - (beta / (1.0 - alpha_bar).sqrt()) * pn[i]);
                 if t > 0 {
                     let z: f32 = rng.gen::<f32>() * 2.0 - 1.0;
                     x[i] = mean + beta.sqrt() * z;

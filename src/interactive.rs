@@ -98,24 +98,30 @@ pub fn run_repl() {
             "predict" => handle_predict(&parts[1..], &mut session),
             "info" => handle_info(&session),
             _ => {
-                println!("Unknown command: '{}'. Type 'help' for available commands.", parts[0]);
+                println!(
+                    "Unknown command: '{}'. Type 'help' for available commands.",
+                    parts[0]
+                );
             }
         }
     }
 }
 
 fn print_banner() {
-    println!(r"
+    println!(
+        r"
   ╔═══════════════════════════════════════════╗
   ║   rust-nn Interactive Session  v0.11.0   ║
   ║   Neural Networks in Pure Rust            ║
   ╚═══════════════════════════════════════════╝
   Type 'help' for commands. 'exit' to quit.
-");
+"
+    );
 }
 
 fn print_help() {
-    println!(r"
+    println!(
+        r"
   Commands:
     tensor randn <dims...>        Create a random tensor and print it
     tensor zeros <dims...>        Create a zeros tensor and print it
@@ -143,7 +149,8 @@ fn print_help() {
     predict <row>                 Run inference on a specific row
     info                          Show current session state
     exit                          Quit
-");
+"
+    );
 }
 
 fn handle_tensor(args: &[&str]) {
@@ -151,10 +158,7 @@ fn handle_tensor(args: &[&str]) {
         println!("Usage: tensor randn|zeros <dims...>");
         return;
     }
-    let dims: Vec<usize> = args[1..]
-        .iter()
-        .filter_map(|s| s.parse().ok())
-        .collect();
+    let dims: Vec<usize> = args[1..].iter().filter_map(|s| s.parse().ok()).collect();
     if dims.is_empty() {
         println!("Error: provide at least one dimension");
         return;
@@ -237,8 +241,13 @@ fn handle_model(args: &[&str], session: &mut Session) {
                 let params = model.parameters();
                 let total: usize = params.iter().map(|t| t.len()).sum();
                 println!("\n  Model: Sequential");
-                println!("  Parameters: {} tensors, {} total elements", params.len(), total);
-                if let (Some(inp), Some(out)) = (session.model_input_dim, session.model_output_dim) {
+                println!(
+                    "  Parameters: {} tensors, {} total elements",
+                    params.len(),
+                    total
+                );
+                if let (Some(inp), Some(out)) = (session.model_input_dim, session.model_output_dim)
+                {
                     println!("  Input dim: {inp}, Output dim: {out}");
                 }
             } else {
@@ -255,36 +264,33 @@ fn handle_data(args: &[&str], session: &mut Session) {
         return;
     }
     match args[0] {
-        "csv" if args.len() >= 2 => {
-            match data::load_csv(args[1]) {
-                Ok(ds) => {
-                    println!("{}", ds.summary());
-                    session.dataset = Some(ds);
-                }
-                Err(e) => println!("Error: {e}"),
+        "csv" if args.len() >= 2 => match data::load_csv(args[1]) {
+            Ok(ds) => {
+                println!("{}", ds.summary());
+                session.dataset = Some(ds);
             }
-        }
-        "tsv" if args.len() >= 2 => {
-            match data::load_tsv(args[1]) {
-                Ok(ds) => {
-                    println!("{}", ds.summary());
-                    session.dataset = Some(ds);
-                }
-                Err(e) => println!("Error: {e}"),
+            Err(e) => println!("Error: {e}"),
+        },
+        "tsv" if args.len() >= 2 => match data::load_tsv(args[1]) {
+            Ok(ds) => {
+                println!("{}", ds.summary());
+                session.dataset = Some(ds);
             }
-        }
-        "jsonl" if args.len() >= 2 => {
-            match data::load_jsonl(args[1]) {
-                Ok(ds) => {
-                    println!("{}", ds.summary());
-                    session.dataset = Some(ds);
-                }
-                Err(e) => println!("Error: {e}"),
+            Err(e) => println!("Error: {e}"),
+        },
+        "jsonl" if args.len() >= 2 => match data::load_jsonl(args[1]) {
+            Ok(ds) => {
+                println!("{}", ds.summary());
+                session.dataset = Some(ds);
             }
-        }
+            Err(e) => println!("Error: {e}"),
+        },
         "hf" if args.len() >= 4 => {
             let n: usize = args[3].parse().unwrap_or(100);
-            println!("Loading from HuggingFace: {}/{} ({} rows)...", args[1], args[2], n);
+            println!(
+                "Loading from HuggingFace: {}/{} ({} rows)...",
+                args[1], args[2], n
+            );
             match data::load_huggingface(args[1], args[2], n, None) {
                 Ok(ds) => {
                     println!("{}", ds.summary());
@@ -320,9 +326,13 @@ fn handle_data(args: &[&str], session: &mut Session) {
                 for name in names {
                     let col = &ds.columns[name];
                     let dtype = if col.is_numeric() { "f32" } else { "str" };
-                    let mark = if session.feature_columns.contains(name) { " [feature]" }
-                        else if session.target_column.as_deref() == Some(name.as_str()) { " [target]" }
-                        else { "" };
+                    let mark = if session.feature_columns.contains(name) {
+                        " [feature]"
+                    } else if session.target_column.as_deref() == Some(name.as_str()) {
+                        " [target]"
+                    } else {
+                        ""
+                    };
                     println!("  {name}: {dtype}{}", mark);
                 }
             } else {
@@ -359,7 +369,9 @@ fn handle_train(args: &[&str], session: &mut Session) {
         return;
     };
     if session.feature_columns.is_empty() || session.target_column.is_none() {
-        println!("Set feature and target columns first. Use 'data features ...' and 'data target ...'.");
+        println!(
+            "Set feature and target columns first. Use 'data features ...' and 'data target ...'."
+        );
         return;
     }
 
@@ -386,10 +398,18 @@ fn handle_train(args: &[&str], session: &mut Session) {
         losses.push(loss_val as f64);
 
         let bar = sparkline(&losses);
-        println!("  Epoch {:>3}: loss = {:>10.4} {}", epoch + 1, loss_val, bar);
+        println!(
+            "  Epoch {:>3}: loss = {:>10.4} {}",
+            epoch + 1,
+            loss_val,
+            bar
+        );
     }
     println!("  {}", "-".repeat(50));
-    println!("  Training complete. Final loss: {:.4}\n", losses.last().copied().unwrap_or(0.0));
+    println!(
+        "  Training complete. Final loss: {:.4}\n",
+        losses.last().copied().unwrap_or(0.0)
+    );
 }
 
 fn handle_predict(args: &[&str], session: &mut Session) {
@@ -402,14 +422,34 @@ fn handle_predict(args: &[&str], session: &mut Session) {
     let row_ds = ds.head(row + 1);
     let inputs = row_ds.to_tensor(&feat_names);
     let out = model.forward(&inputs);
-    let row_out: Vec<f32> = out.data().iter().copied().skip(row * out.shape()[out.ndim() - 1]).take(out.shape()[out.ndim()-1]).collect();
+    let row_out: Vec<f32> = out
+        .data()
+        .iter()
+        .copied()
+        .skip(row * out.shape()[out.ndim() - 1])
+        .take(out.shape()[out.ndim() - 1])
+        .collect();
     println!("  Prediction for row {row}: {:?}", row_out);
 }
 
 fn handle_info(session: &Session) {
     println!("\n  Session state:");
-    println!("    Model: {}", if session.model.is_some() { "loaded" } else { "none" });
-    println!("    Dataset: {}", if session.dataset.is_some() { "loaded" } else { "none" });
+    println!(
+        "    Model: {}",
+        if session.model.is_some() {
+            "loaded"
+        } else {
+            "none"
+        }
+    );
+    println!(
+        "    Dataset: {}",
+        if session.dataset.is_some() {
+            "loaded"
+        } else {
+            "none"
+        }
+    );
     if !session.feature_columns.is_empty() {
         println!("    Features: {:?}", session.feature_columns);
     }
@@ -461,18 +501,21 @@ pub fn process_command(session: &mut Session, command: &str) -> String {
             if parts.len() >= 2 && parts[1] == "new" {
                 session.model = Some(Sequential::new());
                 output = "New model created".into();
-            } else if parts.len() >= 4 && parts[1] == "add" && parts[2] == "linear"
-                && session.model.is_some() {
-                    let in_f: usize = parts[3].parse().unwrap_or(0);
-                    let out_f: usize = parts[4].parse().unwrap_or(0);
-                    let model = session.model.as_mut().unwrap();
-                    if session.model_input_dim.is_none() {
-                        session.model_input_dim = Some(in_f);
-                    }
-                    session.model_output_dim = Some(out_f);
-                    *model = std::mem::take(model).add(Linear::new(in_f, out_f, true));
-                    output = format!("Added Linear({in_f} -> {out_f})");
+            } else if parts.len() >= 4
+                && parts[1] == "add"
+                && parts[2] == "linear"
+                && session.model.is_some()
+            {
+                let in_f: usize = parts[3].parse().unwrap_or(0);
+                let out_f: usize = parts[4].parse().unwrap_or(0);
+                let model = session.model.as_mut().unwrap();
+                if session.model_input_dim.is_none() {
+                    session.model_input_dim = Some(in_f);
                 }
+                session.model_output_dim = Some(out_f);
+                *model = std::mem::take(model).add(Linear::new(in_f, out_f, true));
+                output = format!("Added Linear({in_f} -> {out_f})");
+            }
         }
         "data" => {
             if parts.len() >= 4 && parts[1] == "synthetic" {

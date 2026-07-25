@@ -31,8 +31,8 @@
 //! ```
 //! This is ~4-8× faster than INT8 matmul on hardware without dedicated INT8 units.
 
-use crate::tensor::Tensor;
 use crate::nn::{Linear, Module};
+use crate::tensor::Tensor;
 use ndarray::{ArrayD, IxDyn};
 
 // ==================== Ternary packing ====================
@@ -128,14 +128,23 @@ impl TernaryTensor {
         }
 
         let packed = pack_ternary(&ternary);
-        TernaryTensor { packed, scales, shape, numel }
+        TernaryTensor {
+            packed,
+            scales,
+            shape,
+            numel,
+        }
     }
 
     /// Dequantize to f32: `w ≈ ternary_value * per_row_scale`.
     pub fn dequantize(&self) -> Tensor {
         let ternary = unpack_ternary(&self.packed, self.numel);
         let _rows = self.shape.first().copied().unwrap_or(1);
-        let cols = if self.shape.len() >= 2 { self.shape[1] } else { self.numel };
+        let cols = if self.shape.len() >= 2 {
+            self.shape[1]
+        } else {
+            self.numel
+        };
 
         let data: Vec<f32> = (0..self.numel)
             .map(|i| {
@@ -166,7 +175,11 @@ impl TernaryTensor {
         let dequant = self.dequantize();
         let orig: Vec<f32> = original.data().iter().copied().collect();
         let deq: Vec<f32> = dequant.data().iter().copied().collect();
-        let total: f32 = orig.iter().zip(deq.iter()).map(|(a, b)| (a - b).abs()).sum();
+        let total: f32 = orig
+            .iter()
+            .zip(deq.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
         total / orig.len().max(1) as f32
     }
 
@@ -204,10 +217,18 @@ impl TernaryLinear {
     /// Quantize a Linear layer's weights to ternary.
     pub fn from_linear(layer: &Linear) -> Self {
         let ternary_weight = TernaryTensor::quantize(&layer.weight);
-        let bias = layer.bias.as_ref().map(|b| b.data().iter().copied().collect());
+        let bias = layer
+            .bias
+            .as_ref()
+            .map(|b| b.data().iter().copied().collect());
         let in_f = layer.weight.shape()[1];
         let out_f = layer.weight.shape()[0];
-        TernaryLinear { ternary_weight, bias, in_features: in_f, out_features: out_f }
+        TernaryLinear {
+            ternary_weight,
+            bias,
+            in_features: in_f,
+            out_features: out_f,
+        }
     }
 
     /// Ternary forward pass using shift-and-add (no multiplications).
@@ -297,7 +318,11 @@ impl TernaryModel {
             });
 
             let has_bias = bias.is_some();
-            i += if has_bias && i + 1 < params.len() { 2 } else { 1 };
+            i += if has_bias && i + 1 < params.len() {
+                2
+            } else {
+                1
+            };
         }
 
         TernaryModel { layers }
@@ -305,16 +330,15 @@ impl TernaryModel {
 
     /// Total memory usage in bytes.
     pub fn mem_bytes(&self) -> usize {
-        self.layers.iter()
+        self.layers
+            .iter()
             .map(|l| l.ternary_weight.mem_bytes() + l.bias.as_ref().map_or(0, |b| b.len() * 4))
             .sum()
     }
 
     /// Compression ratio vs f32 model.
     pub fn compression_ratio(&self) -> f64 {
-        let total_elements: usize = self.layers.iter()
-            .map(|l| l.ternary_weight.numel)
-            .sum();
+        let total_elements: usize = self.layers.iter().map(|l| l.ternary_weight.numel).sum();
         let f32_bytes = total_elements * 4;
         f32_bytes as f64 / self.mem_bytes().max(1) as f64
     }
@@ -324,7 +348,8 @@ impl TernaryModel {
         if self.layers.is_empty() {
             return 0.0;
         }
-        self.layers.iter()
+        self.layers
+            .iter()
             .map(|l| l.ternary_weight.sparsity())
             .sum::<f64>()
             / self.layers.len() as f64
@@ -366,7 +391,11 @@ mod tests {
         let q = TernaryTensor::quantize(&t);
         // 64*128 = 8192 weights. Packed: 8192/16 = 512 u32s = 2048 bytes + 64 scales = 2304 bytes.
         // f32: 8192*4 = 32768 bytes. Ratio: ~14x.
-        assert!(q.compression_ratio() > 10.0, "compression should be >10x, got {}", q.compression_ratio());
+        assert!(
+            q.compression_ratio() > 10.0,
+            "compression should be >10x, got {}",
+            q.compression_ratio()
+        );
     }
 
     #[test]
@@ -404,7 +433,13 @@ mod tests {
 
     #[test]
     fn ternary_pack_unpack_large() {
-        let values: Vec<i8> = (0..1000).map(|i| match i % 3 { 0 => 1, 1 => -1, _ => 0 }).collect();
+        let values: Vec<i8> = (0..1000)
+            .map(|i| match i % 3 {
+                0 => 1,
+                1 => -1,
+                _ => 0,
+            })
+            .collect();
         let packed = pack_ternary(&values);
         let unpacked = unpack_ternary(&packed, 1000);
         assert_eq!(unpacked, values);
@@ -437,7 +472,10 @@ mod tests {
             .add(crate::nn::ReLU)
             .add(Linear::new(64, 32, true));
         let t_model = TernaryModel::from_model(&model);
-        assert!(t_model.compression_ratio() > 8.0, "model should compress >8x");
+        assert!(
+            t_model.compression_ratio() > 8.0,
+            "model should compress >8x"
+        );
     }
 
     #[test]
@@ -454,8 +492,7 @@ mod tests {
 
     #[test]
     fn ternary_model_sparsity() {
-        let model = crate::nn::Sequential::new()
-            .add(Linear::new(16, 32, true));
+        let model = crate::nn::Sequential::new().add(Linear::new(16, 32, true));
         let t_model = TernaryModel::from_model(&model);
         let sparsity = t_model.avg_sparsity();
         assert!((0.0..=1.0).contains(&sparsity));
