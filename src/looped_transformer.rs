@@ -24,6 +24,20 @@ use crate::nn::{LayerNorm, Linear, Module, Sequential, GELU};
 use crate::tensor::Tensor;
 use std::sync::Arc;
 
+/// Which attention kernel a transformer block uses.
+///
+/// `Flash` is exact softmax attention (O(N²·d)); `Linear` is the kernelized linear attention from
+/// [`crate::linear_attention`] (O(N·d²), much faster for long sequences, an approximation of
+/// softmax). Selectable per-model so the same `Transformer`/`LoopedTransformer` can run either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AttentionKind {
+    /// Exact scaled dot-product attention via FlashAttention (online-softmax, O(seq) memory).
+    #[default]
+    Flash,
+    /// Linear (kernelized) attention — O(N·d²), the fast alternative for long sequences.
+    Linear,
+}
+
 /// Multi-head self-attention using the fused FlashAttention kernel.
 ///
 /// Projects the input to Q/K/V, splits into `num_heads` heads, applies exact memory-efficient
@@ -38,6 +52,8 @@ pub struct MultiHeadAttention {
     pub num_heads: usize,
     pub head_dim: usize,
     pub d_model: usize,
+    /// Which attention kernel to use (Flash = exact, Linear = fast O(N)).
+    pub attention: AttentionKind,
 }
 
 impl MultiHeadAttention {
@@ -55,7 +71,14 @@ impl MultiHeadAttention {
             num_heads,
             head_dim,
             d_model,
+            attention: AttentionKind::Flash,
         }
+    }
+
+    /// Select the attention kernel (Flash = exact, Linear = fast O(N) alternative).
+    pub fn with_attention(mut self, kind: AttentionKind) -> Self {
+        self.attention = kind;
+        self
     }
 
     /// Split `[batch, seq, d_model]` into `[batch*num_heads, seq, head_dim]` for per-head attention.
@@ -93,7 +116,18 @@ impl Module for MultiHeadAttention {
         let v = self.split_heads(&self.v_proj.forward(input), batch, seq);
 
         let scale = 1.0 / (self.head_dim as f32).sqrt();
-        let attn = Tensor::flash_attention(&q, &k, &v, scale);
+        let attn = match self.attention {
+            AttentionKind::Flash => Tensor::flash_attention(&q, &k, &v, scale),
+            AttentionKind::Linear => Tensor::linear_attention(
+                &q,
+                &k,
+                &v,
+                scale,
+                1e-6,
+                false,
+                crate::linear_attention::KernelKind::Elu,
+            ),
+        };
 
         let merged = self.merge_heads(&attn, batch, seq);
         self.out_proj.forward(&merged)
@@ -136,6 +170,12 @@ impl TransformerBlock {
             d_model,
             ff_dim,
         }
+    }
+
+    /// Select the attention kernel for this block's self-attention sublayer.
+    pub fn with_attention(mut self, kind: AttentionKind) -> Self {
+        self.attn = self.attn.with_attention(kind);
+        self
     }
 }
 
@@ -248,6 +288,12 @@ impl LoopedTransformer {
         self
     }
 
+    /// Select the attention kernel for the shared block (`Flash` = exact, `Linear` = fast O(N)).
+    pub fn with_attention(mut self, kind: AttentionKind) -> Self {
+        self.block = self.block.with_attention(kind);
+        self
+    }
+
     /// Run a forward pass, returning the output and the number of loops actually used
     /// (may be < `num_loops` if adaptive halting triggers).
     pub fn forward_with_loops(&self, input: &Tensor) -> (Tensor, usize) {
@@ -321,6 +367,9 @@ pub struct Transformer {
     pub blocks: Vec<Arc<dyn Module>>,
     pub ln_final: LayerNorm,
     pub head: Linear,
+    pub d_model: usize,
+    pub num_heads: usize,
+    pub ff_dim: usize,
 }
 
 impl Transformer {
@@ -341,7 +390,27 @@ impl Transformer {
             blocks,
             ln_final: LayerNorm::new(d_model),
             head: Linear::new(d_model, output_dim, true),
+            d_model,
+            num_heads,
+            ff_dim,
         }
+    }
+
+    /// Rebuild every block's self-attention with the chosen kernel (`Flash` = exact,
+    /// `Linear` = the fast O(N) alternative). Lets a standard `Transformer` opt into linear
+    /// attention instead of softmax.
+    pub fn with_attention(mut self, kind: AttentionKind) -> Self {
+        let d_model = self.d_model;
+        let num_heads = self.num_heads;
+        let ff_dim = self.ff_dim;
+        let n = self.blocks.len();
+        self.blocks = (0..n)
+            .map(|_| {
+                Arc::new(TransformerBlock::new(d_model, num_heads, ff_dim).with_attention(kind))
+                    as Arc<dyn Module>
+            })
+            .collect();
+        self
     }
 }
 

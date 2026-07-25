@@ -116,6 +116,39 @@ pub enum Op {
     /// each query is answered with `φ(Q)·S`. O(N·d²) forward and backward; no N×N matrix.
     /// `kernel_u8`: 0 = ELU+1, 1 = ReLU² (see `linear_attention::KernelKind`).
     LinearAttention(Tensor, Tensor, Tensor, f32, f32, bool, u8),
+    /// Fused **affine layer** `y = act(x · Wᵀ + b)` — the workhorse of small models.
+    ///
+    /// `(x, w, b, act_u8)` where `x` is `[batch, in]`, `w` is `[out, in]` (stored like `nn::Linear`),
+    /// `b` is `[out]`, and `act_u8` is `0` = identity, `1` = ReLU (see [`FusedAct`]).
+    ///
+    /// This collapses what `nn::Linear` previously did as **three** ops — `weight.transpose()`
+    /// (which *copied* the whole weight matrix), `matmul`, and `add(bias)` — into a **single** graph
+    /// node. The transpose is handled *inside* the BLAS `sgemm` via a transpose flag, so the weight
+    /// is never copied. Fewer nodes ⇒ fewer `Arc<RwLock<TensorData>>` allocations, fewer backward
+    /// steps, and one fewer array copy per layer per step — the dominant overhead for small models.
+    Linear(Tensor, Tensor, Tensor, u8),
+}
+
+/// Activation fused into [`Tensor::linear_layer`] / [`Op::Linear`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FusedAct {
+    /// `y = x·Wᵀ + b` (no activation).
+    Identity = 0,
+    /// `y = max(0, x·Wᵀ + b)`.
+    Relu = 1,
+}
+
+impl FusedAct {
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+    pub fn from_u8(v: u8) -> Self {
+        if v == FusedAct::Relu as u8 {
+            FusedAct::Relu
+        } else {
+            FusedAct::Identity
+        }
+    }
 }
 
 /// Helper: extract the input tensors from any Op variant (for graph traversal).
@@ -136,6 +169,7 @@ impl Op {
             Op::Reshape(a, _) | Op::Sum(a, _) | Op::Permute(a, _) => vec![a],
             Op::Rope(a, _, _, _) => vec![a],
             Op::LinearAttention(q, k, v, _, _, _, _) => vec![q, k, v],
+            Op::Linear(x, w, b, _) => vec![x, w, b],
             Op::FlashAttention(q, k, v, _) => vec![q, k, v],
             Op::SelectiveScan(d, b, c, u, a) => vec![d, b, c, u, a],
             Op::LayerNorm(a, g, b, _) => vec![a, g, b],
@@ -677,6 +711,83 @@ impl Tensor {
                 eps,
                 causal,
                 kernel.to_u8(),
+            )));
+        }
+        res
+    }
+
+    /// Fused **affine layer** `y = act(x · Wᵀ + b)` in a single op.
+    ///
+    /// `x` is `[batch, in]`, `w` is `[out, in]` (stored like `nn::Linear::weight`), `b` is `[out]`.
+    /// The transpose of `w` is applied inside the BLAS `sgemm` (`transb = Trans`), so **the weight
+    /// matrix is never copied** — unlike the old `weight.transpose().matmul().add()` path, which
+    /// allocated a transposed copy and three graph nodes. Fully differentiable; backward computes
+    /// `dx`, `dW`, `db` (and the ReLU mask) in one pass via two `sgemm` calls.
+    pub fn linear_layer(x: &Tensor, w: &Tensor, b: &Tensor, act: FusedAct) -> Tensor {
+        let xd = x.data();
+        let wd = w.data();
+        let bd = b.data();
+        let xs = xd.shape();
+        let ws = wd.shape();
+        assert!(
+            xs.len() == 2 && ws.len() == 2 && xs[1] == ws[1],
+            "linear_layer expects x [batch, in] and w [out, in] (shared in), got {:?} / {:?}",
+            xs,
+            ws
+        );
+        let (batch, in_f) = (xs[0], xs[1]);
+        let out_f = ws[0];
+        let relu = act == FusedAct::Relu;
+
+        let x_flat: Vec<f32> = xd.iter().copied().collect();
+        let w_flat: Vec<f32> = wd.iter().copied().collect();
+        let b_flat: Vec<f32> = bd.iter().copied().collect();
+        let mut y = vec![0.0f32; batch * out_f];
+        // y = x · Wᵀ   (W stored [out, in], so transb = Trans, ldb = in)
+        crate::blas::sgemm(
+            crate::blas::Transpose::NoTrans,
+            crate::blas::Transpose::Trans,
+            batch,
+            out_f,
+            in_f,
+            1.0,
+            &x_flat,
+            in_f,
+            &w_flat,
+            in_f,
+            0.0,
+            &mut y,
+            out_f,
+        );
+        // fused bias add + optional ReLU
+        if relu {
+            for i in 0..batch {
+                let row = i * out_f;
+                for o in 0..out_f {
+                    let v = y[row + o] + b_flat[o];
+                    y[row + o] = if v > 0.0 { v } else { 0.0 };
+                }
+            }
+        } else {
+            for i in 0..batch {
+                let row = i * out_f;
+                for o in 0..out_f {
+                    y[row + o] += b_flat[o];
+                }
+            }
+        }
+
+        let res_data = ArrayD::from_shape_vec(IxDyn(&[batch, out_f]), y).unwrap();
+        let requires_grad = x.0.read().unwrap().requires_grad
+            || w.0.read().unwrap().requires_grad
+            || b.0.read().unwrap().requires_grad;
+        let res = Tensor::new(res_data, requires_grad);
+        if requires_grad {
+            res.0.write().unwrap().creator = Some(Arc::new(Op::Linear(
+                x.clone(),
+                w.clone(),
+                b.clone(),
+                act.to_u8(),
             )));
         }
         res
@@ -1454,6 +1565,123 @@ impl Tensor {
                             &mut grad_map,
                             v,
                             ArrayD::from_shape_vec(IxDyn(shape), dv).unwrap(),
+                        );
+                    }
+                }
+                Op::Linear(x, w, b, act_u8) => {
+                    // y = act(x·Wᵀ + b). Backward (all via packed sgemm, no transpose copies):
+                    //   z = x·Wᵀ + b            (recomputed for the ReLU mask)
+                    //   dact = grad ⊙ act'(z)    (ReLU mask, or identity)
+                    //   dx = dact · W            (NoTrans: [batch,out]·[out,in])
+                    //   dW = dactᵀ · x           (Trans: [out,batch]·[batch,in])
+                    //   db = Σ_batch dact        (column sum → [out])
+                    let act = FusedAct::from_u8(*act_u8);
+                    let xd = x.0.read().unwrap().data.clone();
+                    let wd = w.0.read().unwrap().data.clone();
+                    let bd = b.0.read().unwrap().data.clone();
+                    let xs = xd.shape();
+                    let ws = wd.shape();
+                    let (batch, in_f) = (xs[0], xs[1]);
+                    let out_f = ws[0];
+                    let x_flat: Vec<f32> = xd.iter().copied().collect();
+                    let w_flat: Vec<f32> = wd.iter().copied().collect();
+
+                    let g_flat: Vec<f32> = grad.iter().copied().collect(); // grad is [batch, out]
+                    let dact: Vec<f32> = if act == FusedAct::Relu {
+                        // recompute z = x·Wᵀ + b to build the ReLU mask
+                        let mut z = vec![0.0f32; batch * out_f];
+                        crate::blas::sgemm(
+                            crate::blas::Transpose::NoTrans,
+                            crate::blas::Transpose::Trans,
+                            batch,
+                            out_f,
+                            in_f,
+                            1.0,
+                            &x_flat,
+                            in_f,
+                            &w_flat,
+                            in_f,
+                            0.0,
+                            &mut z,
+                            out_f,
+                        );
+                        let mut d = vec![0.0f32; batch * out_f];
+                        for i in 0..batch {
+                            let row = i * out_f;
+                            for o in 0..out_f {
+                                d[row + o] = if z[row + o] + bd[o] > 0.0 {
+                                    g_flat[row + o]
+                                } else {
+                                    0.0
+                                };
+                            }
+                        }
+                        d
+                    } else {
+                        g_flat
+                    };
+
+                    if x.requires_grad() {
+                        // dx[batch,in] = dact[batch,out] · W[out,in]
+                        let mut dx = vec![0.0f32; batch * in_f];
+                        crate::blas::sgemm(
+                            crate::blas::Transpose::NoTrans,
+                            crate::blas::Transpose::NoTrans,
+                            batch,
+                            in_f,
+                            out_f,
+                            1.0,
+                            &dact,
+                            out_f,
+                            &w_flat,
+                            in_f,
+                            0.0,
+                            &mut dx,
+                            in_f,
+                        );
+                        acc(
+                            &mut grad_map,
+                            x,
+                            ArrayD::from_shape_vec(IxDyn(&[batch, in_f]), dx).unwrap(),
+                        );
+                    }
+                    if w.requires_grad() {
+                        // dW[out,in] = dactᵀ[out,batch] · x[batch,in]
+                        let mut dw = vec![0.0f32; out_f * in_f];
+                        crate::blas::sgemm(
+                            crate::blas::Transpose::Trans,
+                            crate::blas::Transpose::NoTrans,
+                            out_f,
+                            in_f,
+                            batch,
+                            1.0,
+                            &dact,
+                            out_f,
+                            &x_flat,
+                            in_f,
+                            0.0,
+                            &mut dw,
+                            in_f,
+                        );
+                        acc(
+                            &mut grad_map,
+                            w,
+                            ArrayD::from_shape_vec(IxDyn(&[out_f, in_f]), dw).unwrap(),
+                        );
+                    }
+                    if b.requires_grad() {
+                        // db[out] = Σ_batch dact
+                        let mut db = vec![0.0f32; out_f];
+                        for i in 0..batch {
+                            let row = i * out_f;
+                            for o in 0..out_f {
+                                db[o] += dact[row + o];
+                            }
+                        }
+                        acc(
+                            &mut grad_map,
+                            b,
+                            ArrayD::from_shape_vec(IxDyn(&[out_f]), db).unwrap(),
                         );
                     }
                 }

@@ -519,6 +519,28 @@ cargo test
 
 ## Changelog
 
+### 1.3.0 — Small-model training overhaul: fused layers, faster `sgemm`, linear attention in `Transformer`
+
+- **Fused affine layer** (`Op::Linear` / `Tensor::linear_layer`): collapses `nn::Linear`'s old
+  `weight.transpose()` (which **copied the whole weight matrix**) + `matmul` + `add(bias)` — three
+  graph nodes — into a **single** node. The transpose is handled inside `blas::sgemm` via a
+  transpose flag, so the weight is never copied. Fewer nodes ⇒ fewer `Arc<RwLock<TensorData>>`
+  allocations, fewer backward steps, one fewer array copy per layer per step — the dominant
+  overhead for small, layer-heavy models. Optional fused ReLU too (`FusedAct::Relu`).
+- **`Linear` backward confirmed through packed `sgemm`** (not just claimed): a central-difference
+  gradient check (`tests/linear_fusion.rs`) verifies every weight gradient is exact. The backward
+  computes `dx`, `dW`, `db` (and the ReLU mask) in one pass via two `sgemm` calls.
+- **`sgemm` small-matrix fast path**: tiny matmuls now run a single serial, **allocation-free**
+  pass that folds β into the same loop (no separate scale pass, no thread pool, no packing buffers),
+  with an i-p-j order that auto-vectorizes into FMA on contiguous B rows. The blocked path also
+  **right-sizes** its packing buffers to the actual matrix instead of always ~640 KB.
+- **Linear attention wired into `Transformer`**: `AttentionKind { Flash, Linear }` is selectable on
+  `MultiHeadAttention`, `TransformerBlock`, `Transformer`, and `LoopedTransformer` via
+  `.with_attention(...)`, so the O(N) linear-attention kernel is now a model-level option, not just
+  a standalone free function.
+- **Operator fusion** for the most common pattern (the affine layer); a tiny MLP trains and the loss
+  drops (smoke test). 335 tests pass, 0 clippy warnings, `cargo fmt` clean.
+
 ### 1.2.0 — Linear attention: an O(N) alternative to FlashAttention
 
 - **Linear (kernelized) attention** (`src/linear_attention.rs`) — a genuinely fast alternative to
