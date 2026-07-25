@@ -43,8 +43,8 @@
 //! runtime compiler (nvrtc for CUDA, Metal framework for MSL, hipRTC for HIP). Use
 //! [`extract_kernels`] to write them to `.ptx`/`.metal`/`.hip` files for offline compilation.
 
-use crate::tensor::Tensor;
 use crate::simd;
+use crate::tensor::Tensor;
 use ndarray::{ArrayD, IxDyn};
 use std::fmt;
 
@@ -169,24 +169,52 @@ impl TileConfig {
     /// Optimal tile config for NVIDIA GPUs (Ampere/Hopper).
     /// Uses BM=128, BN=128, BK=32 with 8 warps, each thread computing an 8×8 register tile.
     pub fn nvidia() -> Self {
-        TileConfig { bm: 128, bn: 128, bk: 32, tm: 8, tn: 8, warp_size: 32 }
+        TileConfig {
+            bm: 128,
+            bn: 128,
+            bk: 32,
+            tm: 8,
+            tn: 8,
+            warp_size: 32,
+        }
     }
 
     /// Optimal tile config for AMD CDNA GPUs (MI300/MI250).
     /// Uses BM=128, BN=256, BK=64 with MFMA-friendly dimensions.
     pub fn amd() -> Self {
-        TileConfig { bm: 128, bn: 256, bk: 64, tm: 4, tn: 4, warp_size: 64 }
+        TileConfig {
+            bm: 128,
+            bn: 256,
+            bk: 64,
+            tm: 4,
+            tn: 4,
+            warp_size: 64,
+        }
     }
 
     /// Optimal tile config for Apple Silicon GPUs (M1/M2/M3/M4).
     /// Uses simdgroup 8×8 matrix tiles: BM=64, BN=64, BK=16 with 4×4 simdgroup grid.
     pub fn apple() -> Self {
-        TileConfig { bm: 64, bn: 64, bk: 16, tm: 8, tn: 8, warp_size: 32 }
+        TileConfig {
+            bm: 64,
+            bn: 64,
+            bk: 16,
+            tm: 8,
+            tn: 8,
+            warp_size: 32,
+        }
     }
 
     /// CPU fallback tile config (matches the SIMD kernel's MC/KC/NC).
     pub fn cpu() -> Self {
-        TileConfig { bm: 64, bn: 256, bk: 256, tm: 1, tn: 1, warp_size: 1 }
+        TileConfig {
+            bm: 64,
+            bn: 256,
+            bk: 256,
+            tm: 1,
+            tn: 1,
+            warp_size: 1,
+        }
     }
 
     /// Get the optimal config for a given backend.
@@ -245,7 +273,11 @@ pub fn kernel_matmul(a: &Tensor, b: &Tensor) -> (Tensor, GpuBackendKind) {
 }
 
 /// Run GEMM on a specific backend (for testing or forced dispatch).
-pub fn kernel_matmul_with_backend(a: &Tensor, b: &Tensor, backend: GpuBackendKind) -> (Tensor, GpuBackendKind) {
+pub fn kernel_matmul_with_backend(
+    a: &Tensor,
+    b: &Tensor,
+    backend: GpuBackendKind,
+) -> (Tensor, GpuBackendKind) {
     match backend {
         GpuBackendKind::Nvidia => {
             // On a real system with CUDA, this would JIT-compile the PTX kernel via nvrtc,
@@ -265,9 +297,7 @@ pub fn kernel_matmul_with_backend(a: &Tensor, b: &Tensor, backend: GpuBackendKin
             // Use the existing wgpu backend.
             (cpu_matmul(a, b), backend)
         }
-        GpuBackendKind::Cpu => {
-            (cpu_matmul(a, b), backend)
-        }
+        GpuBackendKind::Cpu => (cpu_matmul(a, b), backend),
     }
 }
 
@@ -283,7 +313,10 @@ fn cpu_matmul(a: &Tensor, b: &Tensor) -> Tensor {
     let b_flat: Vec<f32> = bd.iter().copied().collect();
     let mut c_flat = vec![0.0f32; m * n];
     simd::simd_matmul(&a_flat, &b_flat, &mut c_flat, m, k, n);
-    Tensor::new(ArrayD::from_shape_vec(IxDyn(&[m, n]), c_flat).unwrap(), false)
+    Tensor::new(
+        ArrayD::from_shape_vec(IxDyn(&[m, n]), c_flat).unwrap(),
+        false,
+    )
 }
 
 // ============================================================================
@@ -820,9 +853,16 @@ mod tests {
 
     #[test]
     fn arithmetic_intensity_positive() {
-        for backend in [GpuBackendKind::Nvidia, GpuBackendKind::Amd, GpuBackendKind::Apple] {
+        for backend in [
+            GpuBackendKind::Nvidia,
+            GpuBackendKind::Amd,
+            GpuBackendKind::Apple,
+        ] {
             let cfg = TileConfig::for_backend(backend);
-            assert!(cfg.arithmetic_intensity() > 0.0, "{backend:?} intensity should be positive");
+            assert!(
+                cfg.arithmetic_intensity() > 0.0,
+                "{backend:?} intensity should be positive"
+            );
         }
     }
 
@@ -848,28 +888,70 @@ mod tests {
 
     #[test]
     fn nvidia_ptx_contains_key_instructions() {
-        assert!(NVIDIA_PTX_KERNEL.contains("fma.rn.f32"), "PTX should use FMA");
-        assert!(NVIDIA_PTX_KERNEL.contains("bar.sync"), "PTX should synchronize");
-        assert!(NVIDIA_PTX_KERNEL.contains(".shared"), "PTX should use shared memory");
-        assert!(NVIDIA_PTX_KERNEL.contains("ld.global.f32"), "PTX should load from global");
-        assert!(NVIDIA_PTX_KERNEL.contains("st.shared.f32"), "PTX should store to shared");
+        assert!(
+            NVIDIA_PTX_KERNEL.contains("fma.rn.f32"),
+            "PTX should use FMA"
+        );
+        assert!(
+            NVIDIA_PTX_KERNEL.contains("bar.sync"),
+            "PTX should synchronize"
+        );
+        assert!(
+            NVIDIA_PTX_KERNEL.contains(".shared"),
+            "PTX should use shared memory"
+        );
+        assert!(
+            NVIDIA_PTX_KERNEL.contains("ld.global.f32"),
+            "PTX should load from global"
+        );
+        assert!(
+            NVIDIA_PTX_KERNEL.contains("st.shared.f32"),
+            "PTX should store to shared"
+        );
     }
 
     #[test]
     fn apple_msl_contains_simdgroup_ops() {
-        assert!(APPLE_MSL_KERNEL.contains("simdgroup_float8x8"), "MSL should use simdgroup matrices");
-        assert!(APPLE_MSL_KERNEL.contains("simdgroup_multiply_accumulate"), "MSL should use simdgroup MMA");
-        assert!(APPLE_MSL_KERNEL.contains("threadgroup"), "MSL should use threadgroup memory");
-        assert!(APPLE_MSL_KERNEL.contains("threadgroup_barrier"), "MSL should synchronize");
-        assert!(APPLE_MSL_KERNEL.contains("simdgroup_async_copy"), "MSL should use async copy");
+        assert!(
+            APPLE_MSL_KERNEL.contains("simdgroup_float8x8"),
+            "MSL should use simdgroup matrices"
+        );
+        assert!(
+            APPLE_MSL_KERNEL.contains("simdgroup_multiply_accumulate"),
+            "MSL should use simdgroup MMA"
+        );
+        assert!(
+            APPLE_MSL_KERNEL.contains("threadgroup"),
+            "MSL should use threadgroup memory"
+        );
+        assert!(
+            APPLE_MSL_KERNEL.contains("threadgroup_barrier"),
+            "MSL should synchronize"
+        );
+        assert!(
+            APPLE_MSL_KERNEL.contains("simdgroup_async_copy"),
+            "MSL should use async copy"
+        );
     }
 
     #[test]
     fn amd_hip_contains_lds_and_mfma() {
-        assert!(AMD_HIP_KERNEL.contains("__shared__"), "HIP should use shared memory (LDS)");
-        assert!(AMD_HIP_KERNEL.contains("__syncthreads"), "HIP should synchronize");
-        assert!(AMD_HIP_KERNEL.contains("PAD"), "HIP should pad to avoid bank conflicts");
-        assert!(AMD_HIP_KERNEL.contains("MFMA"), "HIP should reference MFMA instructions");
+        assert!(
+            AMD_HIP_KERNEL.contains("__shared__"),
+            "HIP should use shared memory (LDS)"
+        );
+        assert!(
+            AMD_HIP_KERNEL.contains("__syncthreads"),
+            "HIP should synchronize"
+        );
+        assert!(
+            AMD_HIP_KERNEL.contains("PAD"),
+            "HIP should pad to avoid bank conflicts"
+        );
+        assert!(
+            AMD_HIP_KERNEL.contains("MFMA"),
+            "HIP should reference MFMA instructions"
+        );
     }
 
     #[test]
@@ -888,7 +970,10 @@ mod tests {
         assert_eq!(paths.len(), 3);
         for path in &paths {
             let content = std::fs::read_to_string(path).unwrap();
-            assert!(!content.is_empty(), "Kernel file {path} should not be empty");
+            assert!(
+                !content.is_empty(),
+                "Kernel file {path} should not be empty"
+            );
         }
     }
 

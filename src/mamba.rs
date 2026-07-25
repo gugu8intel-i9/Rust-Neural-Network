@@ -55,14 +55,19 @@ impl MambaBlock {
         let a_data: Vec<f32> = (0..(d_inner * d_state))
             .map(|i| -(((i % d_state) + 1) as f32) * 0.5)
             .collect();
-        let a = Tensor::new(ArrayD::from_shape_vec(IxDyn(&[d_inner, d_state]), a_data).unwrap(), true);
+        let a = Tensor::new(
+            ArrayD::from_shape_vec(IxDyn(&[d_inner, d_state]), a_data).unwrap(),
+            true,
+        );
         // Conv1d weights initialized to ~1 (so the conv is close to identity initially).
         let mut conv_data = vec![0.0f32; d_inner * kernel_size];
         for c in 0..d_inner {
             conv_data[c * kernel_size + kernel_size - 1] = 1.0; // identity (last tap)
         }
-        let conv_weight =
-            Tensor::new(ArrayD::from_shape_vec(IxDyn(&[d_inner, kernel_size]), conv_data).unwrap(), true);
+        let conv_weight = Tensor::new(
+            ArrayD::from_shape_vec(IxDyn(&[d_inner, kernel_size]), conv_data).unwrap(),
+            true,
+        );
 
         MambaBlock {
             d_model,
@@ -130,9 +135,17 @@ pub struct Mamba {
 
 impl Mamba {
     /// `num_layers` Mamba blocks, each `d_state`-wide with the given expansion and conv kernel.
-    pub fn new(d_model: usize, d_state: usize, expand: usize, kernel_size: usize, num_layers: usize) -> Self {
+    pub fn new(
+        d_model: usize,
+        d_state: usize,
+        expand: usize,
+        kernel_size: usize,
+        num_layers: usize,
+    ) -> Self {
         let blocks: Vec<Arc<dyn Module>> = (0..num_layers)
-            .map(|_| Arc::new(MambaBlock::new(d_model, d_state, expand, kernel_size)) as Arc<dyn Module>)
+            .map(|_| {
+                Arc::new(MambaBlock::new(d_model, d_state, expand, kernel_size)) as Arc<dyn Module>
+            })
             .collect();
         Mamba { blocks, d_model }
     }
@@ -170,7 +183,10 @@ pub struct HybridMamba {
 
 impl HybridMamba {
     pub fn new(d_model: usize) -> Self {
-        HybridMamba { blocks: Vec::new(), d_model }
+        HybridMamba {
+            blocks: Vec::new(),
+            d_model,
+        }
     }
 
     /// Append a block (typically `MambaBlock` or a model-wrapped attention layer) and return self.
@@ -181,7 +197,12 @@ impl HybridMamba {
 
     /// Convenience: append a Mamba block.
     pub fn with_mamba(mut self, d_state: usize, expand: usize, kernel_size: usize) -> Self {
-        self.blocks.push(Arc::new(MambaBlock::new(self.d_model, d_state, expand, kernel_size)));
+        self.blocks.push(Arc::new(MambaBlock::new(
+            self.d_model,
+            d_state,
+            expand,
+            kernel_size,
+        )));
         self
     }
 

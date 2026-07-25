@@ -29,7 +29,10 @@ fn cot_is_differentiable() {
     out.sum().backward();
     let grad = x.grad().expect("CoT input received no gradient");
     // Every element should have a non-trivial gradient flowing through the chain.
-    assert!(grad.iter().all(|&g| g.abs() > 0.0), "CoT gradients should be non-zero");
+    assert!(
+        grad.iter().all(|&g| g.abs() > 0.0),
+        "CoT gradients should be non-zero"
+    );
 }
 
 #[test]
@@ -39,7 +42,10 @@ fn cot_zero_steps_is_identity() {
     let out = cot.forward(&x);
     let od: Vec<f32> = out.data().iter().copied().collect();
     for i in 0..4 {
-        assert!((od[i] - [1.0, 2.0, 3.0, 4.0][i]).abs() < 1e-6, "0-step CoT should be identity");
+        assert!(
+            (od[i] - [1.0, 2.0, 3.0, 4.0][i]).abs() < 1e-6,
+            "0-step CoT should be identity"
+        );
     }
 }
 
@@ -102,5 +108,8 @@ fn tot_has_parameters() {
     let tot = TreeOfThoughts::new(8, 2, 2, 2);
     // thought_layer (2 Linears with bias = 4 param tensors) + evaluator (1 Linear = 2 tensors).
     let params = tot.parameters();
-    assert!(params.len() >= 4, "ToT should expose thought + evaluator params");
+    assert!(
+        params.len() >= 4,
+        "ToT should expose thought + evaluator params"
+    );
 }

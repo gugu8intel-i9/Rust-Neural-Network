@@ -49,9 +49,15 @@ fn naive_attention(q: &ArrayD<f32>, k: &ArrayD<f32>, v: &ArrayD<f32>, scale: f32
 #[test]
 fn flash_forward_matches_naive() {
     let (b, n, d) = (2, 5, 4);
-    let qv: Vec<f32> = (0..b * n * d).map(|i| (i as f32 * 0.13 - 1.0).sin()).collect();
-    let kv: Vec<f32> = (0..b * n * d).map(|i| (i as f32 * 0.27 + 0.5).cos()).collect();
-    let vv: Vec<f32> = (0..b * n * d).map(|i| (i as f32 * 0.09).tan() * 0.1).collect();
+    let qv: Vec<f32> = (0..b * n * d)
+        .map(|i| (i as f32 * 0.13 - 1.0).sin())
+        .collect();
+    let kv: Vec<f32> = (0..b * n * d)
+        .map(|i| (i as f32 * 0.27 + 0.5).cos())
+        .collect();
+    let vv: Vec<f32> = (0..b * n * d)
+        .map(|i| (i as f32 * 0.09).tan() * 0.1)
+        .collect();
 
     let q = leaf(&qv, &[b, n, d]);
     let k = leaf(&kv, &[b, n, d]);
@@ -68,16 +74,25 @@ fn flash_forward_matches_naive() {
         max_diff = max_diff.max((od.iter().nth(i).copied().unwrap_or(0.0) - r).abs());
     }
     println!("flash vs naive max diff: {max_diff:.2e}");
-    assert!(max_diff < 1e-5, "flash attention forward differs from naive: {max_diff:.2e}");
+    assert!(
+        max_diff < 1e-5,
+        "flash attention forward differs from naive: {max_diff:.2e}"
+    );
 }
 
 #[test]
 fn flash_grad_matches_numeric_q() {
     // Check gradients flow to Q via a scalar reduction of the output.
     let (b, n, d) = (1, 4, 3);
-    let base: Vec<f32> = (0..b * n * d).map(|i| (i as f32 * 0.31).sin() * 0.5).collect();
-    let kv: Vec<f32> = (0..b * n * d).map(|i| (i as f32 * 0.17).cos() * 0.4).collect();
-    let vv: Vec<f32> = (0..b * n * d).map(|i| (i as f32 * 0.23).tan() * 0.1).collect();
+    let base: Vec<f32> = (0..b * n * d)
+        .map(|i| (i as f32 * 0.31).sin() * 0.5)
+        .collect();
+    let kv: Vec<f32> = (0..b * n * d)
+        .map(|i| (i as f32 * 0.17).cos() * 0.4)
+        .collect();
+    let vv: Vec<f32> = (0..b * n * d)
+        .map(|i| (i as f32 * 0.23).tan() * 0.1)
+        .collect();
     let scale = 1.0 / (d as f32).sqrt();
     let shape = [b, n, d];
 
@@ -106,15 +121,24 @@ fn flash_grad_matches_numeric_q() {
         max_diff = max_diff.max((num - analytic[i]).abs());
     }
     println!("flash q-grad max |analytic - numeric| = {max_diff:.2e}");
-    assert!(max_diff < 1e-2, "flash attention q-gradient mismatch: {max_diff:.2e}");
+    assert!(
+        max_diff < 1e-2,
+        "flash attention q-gradient mismatch: {max_diff:.2e}"
+    );
 }
 
 #[test]
 fn flash_grad_matches_numeric_v() {
     let (b, n, d) = (1, 3, 4);
-    let base: Vec<f32> = (0..b * n * d).map(|i| (i as f32 * 0.2).sin() * 0.3).collect();
-    let qv: Vec<f32> = (0..b * n * d).map(|i| (i as f32 * 0.15).cos() * 0.5).collect();
-    let kv: Vec<f32> = (0..b * n * d).map(|i| (i as f32 * 0.19).sin() * 0.5).collect();
+    let base: Vec<f32> = (0..b * n * d)
+        .map(|i| (i as f32 * 0.2).sin() * 0.3)
+        .collect();
+    let qv: Vec<f32> = (0..b * n * d)
+        .map(|i| (i as f32 * 0.15).cos() * 0.5)
+        .collect();
+    let kv: Vec<f32> = (0..b * n * d)
+        .map(|i| (i as f32 * 0.19).sin() * 0.5)
+        .collect();
     let scale = 1.0 / (d as f32).sqrt();
     let shape = [b, n, d];
 
@@ -142,5 +166,8 @@ fn flash_grad_matches_numeric_v() {
         max_diff = max_diff.max((num - analytic[i]).abs());
     }
     println!("flash v-grad max |analytic - numeric| = {max_diff:.2e}");
-    assert!(max_diff < 1e-2, "flash attention v-gradient mismatch: {max_diff:.2e}");
+    assert!(
+        max_diff < 1e-2,
+        "flash attention v-gradient mismatch: {max_diff:.2e}"
+    );
 }

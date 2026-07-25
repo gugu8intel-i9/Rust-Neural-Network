@@ -4,7 +4,10 @@ use ndarray::{ArrayD, IxDyn};
 use rust_nn::tensor::Tensor;
 
 fn leaf(data: &[f32], shape: &[usize]) -> Tensor {
-    Tensor::new(ArrayD::from_shape_vec(IxDyn(shape), data.to_vec()).unwrap(), true)
+    Tensor::new(
+        ArrayD::from_shape_vec(IxDyn(shape), data.to_vec()).unwrap(),
+        true,
+    )
 }
 
 fn run_sum(delta: &Tensor, b_vec: &Tensor, c_vec: &Tensor, u: &Tensor, a: &Tensor) -> f32 {
@@ -64,7 +67,9 @@ fn selective_scan_grad_a_matches_numeric() {
 #[test]
 fn selective_scan_grad_delta_matches_numeric() {
     let (batch, seq, dim, n) = (1, 4, 3, 2);
-    let base: Vec<f32> = (0..batch * seq * dim).map(|i| 0.1 + i as f32 * 0.05).collect();
+    let base: Vec<f32> = (0..batch * seq * dim)
+        .map(|i| 0.1 + i as f32 * 0.05)
+        .collect();
     let shape = [batch, seq, dim];
 
     let bv = leaf(&vec![0.4; batch * seq * n], &[batch, seq, n]);
@@ -98,7 +103,9 @@ fn selective_scan_grad_bcu_match_numeric() {
     let (batch, seq, dim, n) = (1, 3, 2, 2);
     let bv_base: Vec<f32> = (0..batch * seq * n).map(|i| 0.3 + i as f32 * 0.1).collect();
     let cv_base: Vec<f32> = (0..batch * seq * n).map(|i| 0.2 + i as f32 * 0.1).collect();
-    let u_base: Vec<f32> = (0..batch * seq * dim).map(|i| 0.5 + i as f32 * 0.1).collect();
+    let u_base: Vec<f32> = (0..batch * seq * dim)
+        .map(|i| 0.5 + i as f32 * 0.1)
+        .collect();
     let bn = [batch, seq, n];
     let un = [batch, seq, dim];
 
@@ -109,17 +116,34 @@ fn selective_scan_grad_bcu_match_numeric() {
     let bv = leaf(&bv_base, &bn);
     let cv = leaf(&cv_base, &bn);
     let u = leaf(&u_base, &un);
-    Tensor::selective_scan(&delta, &bv, &cv, &u, &a).sum().backward();
+    Tensor::selective_scan(&delta, &bv, &cv, &u, &a)
+        .sum()
+        .backward();
     let eps = 1e-3f32;
-    let check = |base: &[f32], shape: &[usize], analytic: &[f32], mk: &dyn Fn(&Tensor, &Tensor, &Tensor) -> Tensor| {
+    let check = |base: &[f32],
+                 shape: &[usize],
+                 analytic: &[f32],
+                 mk: &dyn Fn(&Tensor, &Tensor, &Tensor) -> Tensor| {
         let mut md = 0.0f32;
         for i in 0..base.len() {
             let mut hi = base.to_vec();
             let mut lo = base.to_vec();
             hi[i] += eps;
             lo[i] -= eps;
-            let l_hi = mk(&leaf(&hi, shape), &leaf(&cv_base, &bn), &leaf(&u_base, &un)).sum().data().iter().copied().next().unwrap();
-            let l_lo = mk(&leaf(&lo, shape), &leaf(&cv_base, &bn), &leaf(&u_base, &un)).sum().data().iter().copied().next().unwrap();
+            let l_hi = mk(&leaf(&hi, shape), &leaf(&cv_base, &bn), &leaf(&u_base, &un))
+                .sum()
+                .data()
+                .iter()
+                .copied()
+                .next()
+                .unwrap();
+            let l_lo = mk(&leaf(&lo, shape), &leaf(&cv_base, &bn), &leaf(&u_base, &un))
+                .sum()
+                .data()
+                .iter()
+                .copied()
+                .next()
+                .unwrap();
             let num = (l_hi - l_lo) / (2.0 * eps);
             md = md.max((num - analytic[i]).abs());
         }
@@ -127,17 +151,23 @@ fn selective_scan_grad_bcu_match_numeric() {
     };
 
     let bv_analytic: Vec<f32> = bv.grad().expect("no b grad").iter().copied().collect();
-    let md_b = check(&bv_base, &bn, &bv_analytic, &|x, cv, u| Tensor::selective_scan(&delta, x, cv, u, &a));
+    let md_b = check(&bv_base, &bn, &bv_analytic, &|x, cv, u| {
+        Tensor::selective_scan(&delta, x, cv, u, &a)
+    });
     println!("b-grad max diff: {md_b:.2e}");
     assert!(md_b < 1e-2, "b-gradient mismatch: {md_b:.2e}");
 
     let cv_analytic: Vec<f32> = cv.grad().expect("no c grad").iter().copied().collect();
-    let md_c = check(&cv_base, &bn, &cv_analytic, &|x, _cv, u| Tensor::selective_scan(&delta, &leaf(&bv_base, &bn), x, u, &a));
+    let md_c = check(&cv_base, &bn, &cv_analytic, &|x, _cv, u| {
+        Tensor::selective_scan(&delta, &leaf(&bv_base, &bn), x, u, &a)
+    });
     println!("c-grad max diff: {md_c:.2e}");
     assert!(md_c < 1e-2, "c-gradient mismatch: {md_c:.2e}");
 
     let u_analytic: Vec<f32> = u.grad().expect("no u grad").iter().copied().collect();
-    let md_u = check(&u_base, &un, &u_analytic, &|x, _cv, _u| Tensor::selective_scan(&delta, &leaf(&bv_base, &bn), &leaf(&cv_base, &bn), x, &a));
+    let md_u = check(&u_base, &un, &u_analytic, &|x, _cv, _u| {
+        Tensor::selective_scan(&delta, &leaf(&bv_base, &bn), &leaf(&cv_base, &bn), x, &a)
+    });
     println!("u-grad max diff: {md_u:.2e}");
     assert!(md_u < 1e-2, "u-gradient mismatch: {md_u:.2e}");
 }

@@ -24,10 +24,7 @@ pub enum RustNnError {
         actual: usize,
     },
     /// A generic invalid input (e.g. zero vocab size, negative learning rate).
-    InvalidInput {
-        op: &'static str,
-        msg: String,
-    },
+    InvalidInput { op: &'static str, msg: String },
     /// A tensor index is out of bounds.
     IndexOutOfBounds {
         op: &'static str,
@@ -35,9 +32,7 @@ pub enum RustNnError {
         shape: Vec<usize>,
     },
     /// An empty tensor was provided where a non-empty one was required.
-    EmptyTensor {
-        op: &'static str,
-    },
+    EmptyTensor { op: &'static str },
     /// A serialization or deserialization failure.
     Serialization(String),
     /// A GPU / device error.
@@ -48,7 +43,12 @@ pub enum RustNnError {
 
 impl RustNnError {
     /// Convenience constructor for shape mismatch.
-    pub fn shape_mismatch(op: &'static str, expected: &[usize], actual: &[usize], detail: &'static str) -> Self {
+    pub fn shape_mismatch(
+        op: &'static str,
+        expected: &[usize],
+        actual: &[usize],
+        detail: &'static str,
+    ) -> Self {
         RustNnError::ShapeMismatch {
             op,
             expected: expected.to_vec(),
@@ -59,24 +59,45 @@ impl RustNnError {
 
     /// Convenience constructor for invalid ndims.
     pub fn invalid_ndims(op: &'static str, expected: usize, actual: usize) -> Self {
-        RustNnError::InvalidNdims { op, expected, actual }
+        RustNnError::InvalidNdims {
+            op,
+            expected,
+            actual,
+        }
     }
 }
 
 impl fmt::Display for RustNnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RustNnError::ShapeMismatch { op, expected, actual, detail } => {
-                write!(f, "{}: shape mismatch - expected {:?}, got {:?}. {}", op, expected, actual, detail)
+            RustNnError::ShapeMismatch {
+                op,
+                expected,
+                actual,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "{}: shape mismatch - expected {:?}, got {:?}. {}",
+                    op, expected, actual, detail
+                )
             }
-            RustNnError::InvalidNdims { op, expected, actual } => {
+            RustNnError::InvalidNdims {
+                op,
+                expected,
+                actual,
+            } => {
                 write!(f, "{op}: expected {expected} dimensions, got {actual}")
             }
             RustNnError::InvalidInput { op, msg } => {
                 write!(f, "{}: invalid input - {}", op, msg)
             }
             RustNnError::IndexOutOfBounds { op, index, shape } => {
-                write!(f, "{op}: index {:?} is out of bounds for shape {:?}", index, shape)
+                write!(
+                    f,
+                    "{op}: index {:?} is out of bounds for shape {:?}",
+                    index, shape
+                )
             }
             RustNnError::EmptyTensor { op } => {
                 write!(f, "{op}: input tensor is empty")
@@ -101,7 +122,10 @@ pub type Result<T> = std::result::Result<T, RustNnError>;
 
 /// Convert a `std::result::Result` with a string error into a [`RustNnError`].
 pub fn from_io(op: &'static str, e: impl std::fmt::Display) -> RustNnError {
-    RustNnError::InvalidInput { op, msg: e.to_string() }
+    RustNnError::InvalidInput {
+        op,
+        msg: e.to_string(),
+    }
 }
 
 // ==================== Checked tensor operations ====================
@@ -128,10 +152,18 @@ pub fn checked_matmul(a: &TensorType, b: &TensorType) -> Result<TensorType> {
     let a_shape = a.shape();
     let b_shape = b.shape();
     if a_shape.len() != 2 {
-        return Err(RustNnError::invalid_ndims("checked_matmul", 2, a_shape.len()));
+        return Err(RustNnError::invalid_ndims(
+            "checked_matmul",
+            2,
+            a_shape.len(),
+        ));
     }
     if b_shape.len() != 2 {
-        return Err(RustNnError::invalid_ndims("checked_matmul", 2, b_shape.len()));
+        return Err(RustNnError::invalid_ndims(
+            "checked_matmul",
+            2,
+            b_shape.len(),
+        ));
     }
     if a_shape[1] != b_shape[0] {
         return Err(RustNnError::shape_mismatch(
@@ -166,8 +198,16 @@ pub fn checked_add(a: &TensorType, b: &TensorType) -> Result<TensorType> {
     // Check broadcastability (trailing dims must match or be 1).
     let max_dims = a_shape.len().max(b_shape.len());
     for i in 0..max_dims {
-        let a_dim = if i < a_shape.len() { a_shape[a_shape.len() - 1 - i] } else { 1 };
-        let b_dim = if i < b_shape.len() { b_shape[b_shape.len() - 1 - i] } else { 1 };
+        let a_dim = if i < a_shape.len() {
+            a_shape[a_shape.len() - 1 - i]
+        } else {
+            1
+        };
+        let b_dim = if i < b_shape.len() {
+            b_shape[b_shape.len() - 1 - i]
+        } else {
+            1
+        };
         if a_dim != b_dim && a_dim != 1 && b_dim != 1 {
             return Err(RustNnError::shape_mismatch(
                 "checked_add",
@@ -203,7 +243,12 @@ mod tests {
 
     #[test]
     fn shape_mismatch_display() {
-        let e = RustNnError::shape_mismatch("matmul", &[2, 3], &[4, 5], "A's columns must equal B's rows");
+        let e = RustNnError::shape_mismatch(
+            "matmul",
+            &[2, 3],
+            &[4, 5],
+            "A's columns must equal B's rows",
+        );
         let s = format!("{e}");
         assert!(s.contains("matmul"));
         assert!(s.contains("shape mismatch"));

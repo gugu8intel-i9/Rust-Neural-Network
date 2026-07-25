@@ -170,7 +170,12 @@ impl GpuBackend {
             entry_point: "main",
         });
 
-        Some(GpuBackend { device, queue, gemm_pipeline, ew_pipeline })
+        Some(GpuBackend {
+            device,
+            queue,
+            gemm_pipeline,
+            ew_pipeline,
+        })
     }
 
     /// GPU-accelerated matrix multiplication with shared-memory tiling.
@@ -183,42 +188,62 @@ impl GpuBackend {
         let a_flat: Vec<f32> = ad.iter().copied().collect();
         let b_flat: Vec<f32> = bd.iter().copied().collect();
 
-        let a_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("A"),
-            contents: cast_bytes(&a_flat),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-        let b_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("B"),
-            contents: cast_bytes(&b_flat),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let a_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("A"),
+                contents: cast_bytes(&a_flat),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+        let b_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("B"),
+                contents: cast_bytes(&b_flat),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
         let c_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("C"),
             size: (m * n * 4) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let dims_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("dims"),
-            contents: cast_bytes(&[m as u32, n as u32, k as u32, 0u32]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let dims_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("dims"),
+                contents: cast_bytes(&[m as u32, n as u32, k as u32, 0u32]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("GEMM bind group"),
             layout: &self.gemm_pipeline.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: a_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: b_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: c_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: dims_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: a_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: b_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: c_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: dims_buf.as_entire_binding(),
+                },
             ],
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("GEMM encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("GEMM encoder"),
+            });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("GEMM pass"),
@@ -250,7 +275,10 @@ impl GpuBackend {
             cast_back(&data)
         };
 
-        Tensor::new(ArrayD::from_shape_vec(IxDyn(&[m, n]), result).unwrap(), false)
+        Tensor::new(
+            ArrayD::from_shape_vec(IxDyn(&[m, n]), result).unwrap(),
+            false,
+        )
     }
 
     pub fn elementwise(&self, a: &Tensor, b: &Tensor, mode: u32) -> Tensor {
@@ -258,44 +286,74 @@ impl GpuBackend {
         let b_flat: Vec<f32> = b.data().iter().copied().collect();
         let n = a_flat.len();
 
-        let a_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("ew_a"), contents: cast_bytes(&a_flat),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-        let b_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("ew_b"), contents: cast_bytes(&b_flat),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let a_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("ew_a"),
+                contents: cast_bytes(&a_flat),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+        let b_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("ew_b"),
+                contents: cast_bytes(&b_flat),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
         let out_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ew_out"), size: (n * 4) as u64,
+            label: Some("ew_out"),
+            size: (n * 4) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let params_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("ew_params"), contents: cast_bytes(&[n as u32, mode, 0u32, 0u32]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let params_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("ew_params"),
+                contents: cast_bytes(&[n as u32, mode, 0u32, 0u32]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("EW bind group"),
             layout: &self.ew_pipeline.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: a_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: b_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: out_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: a_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: b_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: out_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: params_buf.as_entire_binding(),
+                },
             ],
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("EW encoder") });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("EW encoder"),
+            });
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("EW pass"), timestamp_writes: None });
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("EW pass"),
+                timestamp_writes: None,
+            });
             pass.set_pipeline(&self.ew_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(n.div_ceil(64) as u32, 1, 1);
         }
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ew_staging"), size: (n * 4) as u64,
+            label: Some("ew_staging"),
+            size: (n * 4) as u64,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -304,8 +362,14 @@ impl GpuBackend {
         let slice = staging.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
         self.device.poll(wgpu::Maintain::Wait);
-        let result: Vec<f32> = { let data = slice.get_mapped_range(); cast_back(&data) };
-        Tensor::new(ArrayD::from_shape_vec(IxDyn(&a.shape()), result).unwrap(), false)
+        let result: Vec<f32> = {
+            let data = slice.get_mapped_range();
+            cast_back(&data)
+        };
+        Tensor::new(
+            ArrayD::from_shape_vec(IxDyn(&a.shape()), result).unwrap(),
+            false,
+        )
     }
 }
 
@@ -332,26 +396,41 @@ pub fn gpu_matmul(a: &Tensor, b: &Tensor) -> Tensor {
         let b_flat: Vec<f32> = bd.iter().copied().collect();
         let mut c_flat = vec![0.0f32; m * n];
         crate::simd::simd_matmul(&a_flat, &b_flat, &mut c_flat, m, k, n);
-        Tensor::new(ArrayD::from_shape_vec(IxDyn(&[m, n]), c_flat).unwrap(), false)
+        Tensor::new(
+            ArrayD::from_shape_vec(IxDyn(&[m, n]), c_flat).unwrap(),
+            false,
+        )
     }
 }
 
 pub fn gpu_add(a: &Tensor, b: &Tensor) -> Tensor {
-    if let Some(backend) = gpu() { backend.elementwise(a, b, 0) } else { a.add(b) }
+    if let Some(backend) = gpu() {
+        backend.elementwise(a, b, 0)
+    } else {
+        a.add(b)
+    }
 }
 
 pub fn gpu_mul(a: &Tensor, b: &Tensor) -> Tensor {
-    if let Some(backend) = gpu() { backend.elementwise(a, b, 1) } else { a.mul(b) }
+    if let Some(backend) = gpu() {
+        backend.elementwise(a, b, 1)
+    } else {
+        a.mul(b)
+    }
 }
 
-pub fn has_gpu() -> bool { gpu().is_some() }
+pub fn has_gpu() -> bool {
+    gpu().is_some()
+}
 
 fn cast_bytes<T: Sized>(data: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) }
 }
 
 fn cast_back(data: &[u8]) -> Vec<f32> {
-    data.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
+    data.chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect()
 }
 
 pub use wgpu::util::DeviceExt;
@@ -399,5 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn has_gpu_or_fallback() { let _ = has_gpu(); }
+    fn has_gpu_or_fallback() {
+        let _ = has_gpu();
+    }
 }

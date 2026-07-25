@@ -25,8 +25,8 @@
 //! (RTX 5090, B200). The 4-bit values represent: {±0, ±0.5, ±1.0, ±1.5, ±2.0, ±3.0,
 //! ±4.0, ±6.0} with sign.
 
-use crate::tensor::Tensor;
 use crate::nn::{Linear, Module};
+use crate::tensor::Tensor;
 use ndarray::{ArrayD, IxDyn};
 
 // ==================== Quantization format definitions ====================
@@ -61,8 +61,11 @@ impl QuantFormat {
         match self {
             QuantFormat::FP16 | QuantFormat::BF16 => 16,
             QuantFormat::INT8 | QuantFormat::GGUF_Q8 => 8,
-            QuantFormat::INT4 | QuantFormat::NF4 | QuantFormat::NVFP4
-            | QuantFormat::GGUF_Q4 | QuantFormat::GGUF_Q4K => 4,
+            QuantFormat::INT4
+            | QuantFormat::NF4
+            | QuantFormat::NVFP4
+            | QuantFormat::GGUF_Q4
+            | QuantFormat::GGUF_Q4K => 4,
         }
     }
 
@@ -92,10 +95,22 @@ impl QuantFormat {
 /// The 16 NF4 quantile values for the standard normal distribution N(0,1).
 /// These are the information-theoretically optimal 4-bit quantization levels.
 const NF4_LOOKUP: [f32; 16] = [
-    -1.0, -0.696_192_8, -0.525_073_05, -0.394_917_5,
-    -0.284_441_38, -0.184_773_43, -0.091_050_036, 0.0,
-    0.079_580_3, 0.160_930_2, 0.246_112_3, 0.337_915_24,
-    0.440_709_83, 0.562_617, 0.722_956_84, 1.0,
+    -1.0,
+    -0.696_192_8,
+    -0.525_073_05,
+    -0.394_917_5,
+    -0.284_441_38,
+    -0.184_773_43,
+    -0.091_050_036,
+    0.0,
+    0.079_580_3,
+    0.160_930_2,
+    0.246_112_3,
+    0.337_915_24,
+    0.440_709_83,
+    0.562_617,
+    0.722_956_84,
+    1.0,
 ];
 
 /// Find the nearest NF4 index for a normalized value in [-1, 1].
@@ -122,10 +137,10 @@ fn nf4_dequant_single(idx: u8, scale: f32) -> f32 {
 /// NVFP4 E2M1 values: 4-bit floats with 2 exponent + 1 mantissa + 1 sign.
 /// Represents: ±0, ±0.5, ±1.0, ±1.5, ±2.0, ±3.0, ±4.0, ±6.0
 const NVFP4_LOOKUP: [f32; 16] = [
-    0.0, 0.5, 1.0, 1.5,  // positive, exp=0
-    2.0, 3.0, 4.0, 6.0,  // positive, exp=1
-    -0.0, -0.5, -1.0, -1.5,  // negative, exp=0
-    -2.0, -3.0, -4.0, -6.0,  // negative, exp=1
+    0.0, 0.5, 1.0, 1.5, // positive, exp=0
+    2.0, 3.0, 4.0, 6.0, // positive, exp=1
+    -0.0, -0.5, -1.0, -1.5, // negative, exp=0
+    -2.0, -3.0, -4.0, -6.0, // negative, exp=1
 ];
 
 fn nvfp4_quantize_single(x: f32) -> u8 {
@@ -178,7 +193,11 @@ fn dequantize_q4_0_block(scale: f32, packed: &[u8], count: usize) -> Vec<f32> {
     let mut result = Vec::with_capacity(count);
     for i in 0..count {
         let byte = packed[i / 2];
-        let nibble = if i % 2 == 0 { byte & 0xF } else { (byte >> 4) & 0xF };
+        let nibble = if i % 2 == 0 {
+            byte & 0xF
+        } else {
+            (byte >> 4) & 0xF
+        };
         // Sign-extend from 4-bit.
         let val = if nibble & 0x8 != 0 {
             (((nibble) | 0xF0_u8) as i8) as f32
@@ -222,7 +241,9 @@ impl QuantizedTensor {
             QuantFormat::INT4 => Self::quantize_int4(&data, &shape, gs),
             QuantFormat::NF4 => Self::quantize_nf4(&data, &shape, gs),
             QuantFormat::NVFP4 => Self::quantize_nvfp4(&data, &shape, gs),
-            QuantFormat::GGUF_Q4 | QuantFormat::GGUF_Q4K => Self::quantize_gguf_q4(&data, &shape, gs),
+            QuantFormat::GGUF_Q4 | QuantFormat::GGUF_Q4K => {
+                Self::quantize_gguf_q4(&data, &shape, gs)
+            }
             QuantFormat::GGUF_Q8 => Self::quantize_gguf_q8(&data, &shape, gs),
         }
     }
@@ -262,7 +283,11 @@ impl QuantizedTensor {
         let dequant = self.dequantize();
         let orig: Vec<f32> = original.data().iter().copied().collect();
         let deq: Vec<f32> = dequant.data().iter().copied().collect();
-        let total_diff: f32 = orig.iter().zip(deq.iter()).map(|(a, b)| (a - b).abs()).sum();
+        let total_diff: f32 = orig
+            .iter()
+            .zip(deq.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
         total_diff / orig.len().max(1) as f32
     }
 
@@ -287,7 +312,13 @@ impl QuantizedTensor {
             }
         }
 
-        QuantizedTensor { format: QuantFormat::INT8, data: qdata, scales, shape: shape.to_vec(), group_size: gs }
+        QuantizedTensor {
+            format: QuantFormat::INT8,
+            data: qdata,
+            scales,
+            shape: shape.to_vec(),
+            group_size: gs,
+        }
     }
 
     fn dequant_int8(&self, n: usize) -> Vec<f32> {
@@ -315,7 +346,8 @@ impl QuantizedTensor {
             scales.push(scale);
 
             // Quantize to 4-bit [-8, 7].
-            let qvals: Vec<i8> = group.iter()
+            let qvals: Vec<i8> = group
+                .iter()
                 .map(|&v| (v / scale).round().clamp(-8.0, 7.0) as i8)
                 .collect();
 
@@ -323,13 +355,23 @@ impl QuantizedTensor {
             let mut i = 0;
             while i < qvals.len() {
                 let lo = (qvals[i] & 0xF) as u8;
-                let hi = if i + 1 < qvals.len() { (qvals[i + 1] & 0xF) as u8 } else { 0 };
+                let hi = if i + 1 < qvals.len() {
+                    (qvals[i + 1] & 0xF) as u8
+                } else {
+                    0
+                };
                 packed.push(lo | (hi << 4));
                 i += 2;
             }
         }
 
-        QuantizedTensor { format: QuantFormat::INT4, data: packed, scales, shape: shape.to_vec(), group_size: gs }
+        QuantizedTensor {
+            format: QuantFormat::INT4,
+            data: packed,
+            scales,
+            shape: shape.to_vec(),
+            group_size: gs,
+        }
     }
 
     fn dequant_int4(&self, n: usize) -> Vec<f32> {
@@ -338,8 +380,16 @@ impl QuantizedTensor {
             let g = i / self.group_size;
             let scale = self.scales[g.min(self.scales.len() - 1)];
             let byte = self.data[i / 2];
-            let nibble = if i % 2 == 0 { (byte & 0xF) as i8 } else { ((byte >> 4) & 0xF) as i8 };
-            let val: i8 = if nibble & 0x8 != 0 { (nibble as u8 | 0xF0) as i8 } else { nibble };
+            let nibble = if i % 2 == 0 {
+                (byte & 0xF) as i8
+            } else {
+                ((byte >> 4) & 0xF) as i8
+            };
+            let val: i8 = if nibble & 0x8 != 0 {
+                (nibble as u8 | 0xF0) as i8
+            } else {
+                nibble
+            };
             result.push(val as f32 * scale);
         }
         result
@@ -359,18 +409,32 @@ impl QuantizedTensor {
             let scale = if max_abs > 0.0 { max_abs } else { 1.0 };
             scales.push(scale);
 
-            let qvals: Vec<u8> = group.iter()
+            let qvals: Vec<u8> = group
+                .iter()
                 .map(|&v| nf4_quantize_single(v / scale))
                 .collect();
 
             let mut i = 0;
             while i < qvals.len() {
-                packed.push(qvals[i] | (if i + 1 < qvals.len() { qvals[i + 1] << 4 } else { 0 }));
+                packed.push(
+                    qvals[i]
+                        | (if i + 1 < qvals.len() {
+                            qvals[i + 1] << 4
+                        } else {
+                            0
+                        }),
+                );
                 i += 2;
             }
         }
 
-        QuantizedTensor { format: QuantFormat::NF4, data: packed, scales, shape: shape.to_vec(), group_size: gs }
+        QuantizedTensor {
+            format: QuantFormat::NF4,
+            data: packed,
+            scales,
+            shape: shape.to_vec(),
+            group_size: gs,
+        }
     }
 
     fn dequant_nf4(&self, n: usize) -> Vec<f32> {
@@ -379,7 +443,11 @@ impl QuantizedTensor {
             let g = i / self.group_size;
             let scale = self.scales[g.min(self.scales.len() - 1)];
             let byte = self.data[i / 2];
-            let idx = if i % 2 == 0 { byte & 0xF } else { (byte >> 4) & 0xF };
+            let idx = if i % 2 == 0 {
+                byte & 0xF
+            } else {
+                (byte >> 4) & 0xF
+            };
             result.push(nf4_dequant_single(idx, scale));
         }
         result
@@ -399,18 +467,32 @@ impl QuantizedTensor {
             let scale = if max_abs > 0.0 { max_abs / 6.0 } else { 1.0 };
             scales.push(scale);
 
-            let qvals: Vec<u8> = group.iter()
+            let qvals: Vec<u8> = group
+                .iter()
                 .map(|&v| nvfp4_quantize_single(v / scale))
                 .collect();
 
             let mut i = 0;
             while i < qvals.len() {
-                packed.push(qvals[i] | (if i + 1 < qvals.len() { qvals[i + 1] << 4 } else { 0 }));
+                packed.push(
+                    qvals[i]
+                        | (if i + 1 < qvals.len() {
+                            qvals[i + 1] << 4
+                        } else {
+                            0
+                        }),
+                );
                 i += 2;
             }
         }
 
-        QuantizedTensor { format: QuantFormat::NVFP4, data: packed, scales, shape: shape.to_vec(), group_size: gs }
+        QuantizedTensor {
+            format: QuantFormat::NVFP4,
+            data: packed,
+            scales,
+            shape: shape.to_vec(),
+            group_size: gs,
+        }
     }
 
     fn dequant_nvfp4(&self, n: usize) -> Vec<f32> {
@@ -419,7 +501,11 @@ impl QuantizedTensor {
             let g = i / self.group_size;
             let scale = self.scales[g.min(self.scales.len() - 1)];
             let byte = self.data[i / 2];
-            let idx = if i % 2 == 0 { byte & 0xF } else { (byte >> 4) & 0xF };
+            let idx = if i % 2 == 0 {
+                byte & 0xF
+            } else {
+                (byte >> 4) & 0xF
+            };
             result.push(nvfp4_dequant_single(idx, scale));
         }
         result
@@ -440,7 +526,13 @@ impl QuantizedTensor {
             all_packed.extend_from_slice(&packed);
         }
 
-        QuantizedTensor { format: QuantFormat::GGUF_Q4, data: all_packed, scales, shape: shape.to_vec(), group_size: block_size }
+        QuantizedTensor {
+            format: QuantFormat::GGUF_Q4,
+            data: all_packed,
+            scales,
+            shape: shape.to_vec(),
+            group_size: block_size,
+        }
     }
 
     fn dequant_gguf_q4(&self, n: usize) -> Vec<f32> {
@@ -481,7 +573,13 @@ impl QuantizedTensor {
             }
         }
 
-        QuantizedTensor { format: QuantFormat::GGUF_Q8, data: qdata, scales, shape: shape.to_vec(), group_size: block_size }
+        QuantizedTensor {
+            format: QuantFormat::GGUF_Q8,
+            data: qdata,
+            scales,
+            shape: shape.to_vec(),
+            group_size: block_size,
+        }
     }
 
     fn dequant_gguf_q8(&self, n: usize) -> Vec<f32> {
@@ -494,11 +592,18 @@ impl QuantizedTensor {
         for h in &half_data {
             bytes.extend_from_slice(&h.to_le_bytes());
         }
-        QuantizedTensor { format: QuantFormat::FP16, data: bytes, scales: vec![], shape: shape.to_vec(), group_size: 0 }
+        QuantizedTensor {
+            format: QuantFormat::FP16,
+            data: bytes,
+            scales: vec![],
+            shape: shape.to_vec(),
+            group_size: 0,
+        }
     }
 
     fn dequant_fp16(&self, n: usize) -> Vec<f32> {
-        self.data.chunks_exact(2)
+        self.data
+            .chunks_exact(2)
             .map(|c| f16_to_f32(u16::from_le_bytes([c[0], c[1]])))
             .take(n)
             .collect()
@@ -510,11 +615,18 @@ impl QuantizedTensor {
         for h in &bf16_data {
             bytes.extend_from_slice(&h.to_le_bytes());
         }
-        QuantizedTensor { format: QuantFormat::BF16, data: bytes, scales: vec![], shape: shape.to_vec(), group_size: 0 }
+        QuantizedTensor {
+            format: QuantFormat::BF16,
+            data: bytes,
+            scales: vec![],
+            shape: shape.to_vec(),
+            group_size: 0,
+        }
     }
 
     fn dequant_bf16(&self, n: usize) -> Vec<f32> {
-        self.data.chunks_exact(2)
+        self.data
+            .chunks_exact(2)
             .map(|c| bf16_to_f32(u16::from_le_bytes([c[0], c[1]])))
             .take(n)
             .collect()
@@ -614,10 +726,18 @@ impl QuantizedLinear {
     /// Quantize a Linear layer.
     pub fn from_linear(layer: &Linear, format: QuantFormat, group_size: usize) -> Self {
         let weight = QuantizedTensor::quantize(&layer.weight, format, group_size);
-        let bias = layer.bias.as_ref().map(|b| b.data().iter().copied().collect());
+        let bias = layer
+            .bias
+            .as_ref()
+            .map(|b| b.data().iter().copied().collect());
         let in_f = layer.weight.shape()[1];
         let out_f = layer.weight.shape()[0];
-        QuantizedLinear { weight, bias, in_features: in_f, out_features: out_f }
+        QuantizedLinear {
+            weight,
+            bias,
+            in_features: in_f,
+            out_features: out_f,
+        }
     }
 
     /// Inference: dequantize on-the-fly and compute.
@@ -644,7 +764,11 @@ impl QuantizedModel {
         let mut i = 0;
         while i < params.len() {
             let weight = &params[i];
-            let bias = if i + 1 < params.len() { Some(&params[i + 1]) } else { None };
+            let bias = if i + 1 < params.len() {
+                Some(&params[i + 1])
+            } else {
+                None
+            };
 
             let q_weight = QuantizedTensor::quantize(weight, format, group_size);
             let q_bias = bias.map(|b| b.data().iter().copied().collect());
@@ -665,12 +789,17 @@ impl QuantizedModel {
 
     /// Total memory usage in bytes.
     pub fn mem_bytes(&self) -> usize {
-        self.layers.iter().map(|l| l.weight.mem_bytes() + l.bias.as_ref().map_or(0, |b| b.len() * 4)).sum()
+        self.layers
+            .iter()
+            .map(|l| l.weight.mem_bytes() + l.bias.as_ref().map_or(0, |b| b.len() * 4))
+            .sum()
     }
 
     /// Compression ratio vs f32 model.
     pub fn compression_ratio(&self) -> f64 {
-        let total_elements: usize = self.layers.iter()
+        let total_elements: usize = self
+            .layers
+            .iter()
             .map(|l| l.weight.shape.iter().product::<usize>())
             .sum();
         let f32_bytes = total_elements * 4;
@@ -723,7 +852,10 @@ mod tests {
         let err_int4 = q_int4.quantization_error(&t);
         println!("NF4 error: {err_nf4:.6}, INT4 error: {err_int4:.6}");
         // NF4 should generally be better (allow tie for small samples).
-        assert!(err_nf4 <= err_int4 * 1.5, "NF4 error ({err_nf4}) should be <= INT4 error ({err_int4}) * 1.5");
+        assert!(
+            err_nf4 <= err_int4 * 1.5,
+            "NF4 error ({err_nf4}) should be <= INT4 error ({err_int4}) * 1.5"
+        );
     }
 
     #[test]
@@ -746,7 +878,10 @@ mod tests {
         let orig: Vec<f32> = t.data().iter().copied().collect();
         let deq: Vec<f32> = d.data().iter().copied().collect();
         for (o, r) in orig.iter().zip(deq.iter()) {
-            assert!((o - r).abs() / o.abs().max(1e-6) < 0.01, "FP16 error too large: {o} vs {r}");
+            assert!(
+                (o - r).abs() / o.abs().max(1e-6) < 0.01,
+                "FP16 error too large: {o} vs {r}"
+            );
         }
     }
 
@@ -795,7 +930,7 @@ mod tests {
             .add(Linear::new(64, 128, true))
             .add(crate::nn::ReLU)
             .add(Linear::new(128, 64, true));
-        
+
         let q_model = QuantizedModel::from_model(&model, QuantFormat::INT4, 32);
         assert!(q_model.compression_ratio() > 4.0, "should compress >4x");
     }
@@ -803,13 +938,24 @@ mod tests {
     #[test]
     fn all_formats_produce_valid_output() {
         let t = Tensor::randn(&[16, 16]);
-        for format in [QuantFormat::FP16, QuantFormat::BF16, QuantFormat::INT8,
-                       QuantFormat::INT4, QuantFormat::NF4, QuantFormat::NVFP4,
-                       QuantFormat::GGUF_Q4, QuantFormat::GGUF_Q8] {
+        for format in [
+            QuantFormat::FP16,
+            QuantFormat::BF16,
+            QuantFormat::INT8,
+            QuantFormat::INT4,
+            QuantFormat::NF4,
+            QuantFormat::NVFP4,
+            QuantFormat::GGUF_Q4,
+            QuantFormat::GGUF_Q8,
+        ] {
             let q = QuantizedTensor::quantize(&t, format, 32);
             let d = q.dequantize();
             assert_eq!(d.shape(), vec![16, 16], "{:?} wrong shape", format);
-            assert!(d.data().iter().all(|v| v.is_finite()), "{:?} has non-finite values", format);
+            assert!(
+                d.data().iter().all(|v| v.is_finite()),
+                "{:?} has non-finite values",
+                format
+            );
         }
     }
 
@@ -839,6 +985,9 @@ mod tests {
         let q_large = QuantizedTensor::quantize(&t, QuantFormat::INT4, 256);
         let err_small = q_small.quantization_error(&t);
         let err_large = q_large.quantization_error(&t);
-        assert!(err_small <= err_large, "smaller groups should have lower error");
+        assert!(
+            err_small <= err_large,
+            "smaller groups should have lower error"
+        );
     }
 }

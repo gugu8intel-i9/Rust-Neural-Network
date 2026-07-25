@@ -1,9 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rust_nn::tensor::Tensor;
-use rust_nn::nn::{Linear, Module, ReLU, Sequential};
-use rust_nn::nn::{Dropout};
-use rust_nn::simd;
+use rust_nn::blas;
 use rust_nn::fused::{fused_linear, FusedActivation};
+use rust_nn::nn::{Dropout, Linear, Module, ReLU, Sequential};
+use rust_nn::simd;
+use rust_nn::tensor::Tensor;
 
 fn bench_matmul(c: &mut Criterion) {
     let mut group = c.benchmark_group("matmul");
@@ -24,7 +24,71 @@ fn bench_simd_matmul(c: &mut Criterion) {
         let b: Vec<f32> = (0..size * size).map(|i| (i as f32 * 0.001).cos()).collect();
         let mut c = vec![0.0f32; size * size];
         group.bench_function(format!("{size}x{size}"), |bencher| {
-            bencher.iter(|| simd::simd_matmul(black_box(&a), black_box(&b), black_box(&mut c), *size, *size, *size));
+            bencher.iter(|| {
+                simd::simd_matmul(
+                    black_box(&a),
+                    black_box(&b),
+                    black_box(&mut c),
+                    *size,
+                    *size,
+                    *size,
+                )
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_blas_sgemm(c: &mut Criterion) {
+    // The BLAS engine: transpose-aware, B-panel cache-packed GEMM. The transposed-B variant is
+    // the exact shape the matmul BACKWARD now uses (∂L/∂A = ∂L/∂C · Bᵀ).
+    let mut group = c.benchmark_group("blas_sgemm");
+    for size in [64, 128, 256, 512].iter() {
+        let a: Vec<f32> = (0..size * size).map(|i| (i as f32 * 0.001).sin()).collect();
+        let b: Vec<f32> = (0..size * size).map(|i| (i as f32 * 0.001).cos()).collect();
+        let mut cbuf = vec![0.0f32; size * size];
+        group.bench_function(format!("blas_{size}x{size}"), |bencher| {
+            bencher.iter(|| {
+                blas::sgemm(
+                    blas::Transpose::NoTrans,
+                    blas::Transpose::NoTrans,
+                    *size,
+                    *size,
+                    *size,
+                    1.0,
+                    black_box(&a),
+                    *size,
+                    black_box(&b),
+                    *size,
+                    0.0,
+                    black_box(&mut cbuf),
+                    *size,
+                )
+            });
+        });
+        // Transposed-B multiply (the matmul backward shape): exercises the packing path that a
+        // strided kernel would choke on.
+        let bt: Vec<f32> = (0..size * size)
+            .map(|i| (i as f32 * 0.001).tan() * 0.1)
+            .collect();
+        group.bench_function(format!("blas_transB_{size}x{size}"), |bencher| {
+            bencher.iter(|| {
+                blas::sgemm(
+                    blas::Transpose::NoTrans,
+                    blas::Transpose::Trans,
+                    *size,
+                    *size,
+                    *size,
+                    1.0,
+                    black_box(&a),
+                    *size,
+                    black_box(&bt),
+                    *size,
+                    0.0,
+                    black_box(&mut cbuf),
+                    *size,
+                )
+            });
         });
     }
     group.finish();
@@ -49,7 +113,14 @@ fn bench_fused_linear(c: &mut Criterion) {
     let b = Tensor::randn(&[128]);
 
     group.bench_function("matmul+bias+relu", |bencher| {
-        bencher.iter(|| black_box(fused_linear(black_box(&x), black_box(&w), Some(black_box(&b)), FusedActivation::ReLU)));
+        bencher.iter(|| {
+            black_box(fused_linear(
+                black_box(&x),
+                black_box(&w),
+                Some(black_box(&b)),
+                FusedActivation::ReLU,
+            ))
+        });
     });
 
     // Compare against separate ops.
@@ -105,5 +176,14 @@ fn bench_backward(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_matmul, bench_simd_matmul, bench_dropout, bench_fused_linear, bench_elementwise, bench_backward);
+criterion_group!(
+    benches,
+    bench_matmul,
+    bench_simd_matmul,
+    bench_blas_sgemm,
+    bench_dropout,
+    bench_fused_linear,
+    bench_elementwise,
+    bench_backward
+);
 criterion_main!(benches);

@@ -12,9 +12,9 @@
 //! 8. **Structured Pruning** — remove entire channels/rows that contribute least.
 //! 9. **AutoML Compression** — search for the optimal compression recipe per layer.
 
-use crate::tensor::Tensor;
-use crate::nn::{Linear, Module};
 use crate::loss::Loss;
+use crate::nn::{Linear, Module};
+use crate::tensor::Tensor;
 
 // ==================== 1. Weight Sharing ====================
 
@@ -119,7 +119,14 @@ impl SparseMatrix {
         }
 
         let nnz = values.len();
-        SparseMatrix { values, col_indices, row_ptrs, rows, cols, nnz }
+        SparseMatrix {
+            values,
+            col_indices,
+            row_ptrs,
+            rows,
+            cols,
+            nnz,
+        }
     }
 
     /// Sparse × Dense matmul: `C[m,n] = A_sparse[m,k] @ B_dense[k,n]`.
@@ -216,7 +223,9 @@ impl LayerDropper {
 
     /// Average skip rate across all layers.
     pub fn avg_skip_rate(&self) -> f64 {
-        if self.total_count == 0 { return 0.0; }
+        if self.total_count == 0 {
+            return 0.0;
+        }
         let total_skips: usize = self.skip_counts.iter().sum();
         total_skips as f64 / (self.total_count * self.thresholds.len().max(1)) as f64
     }
@@ -299,13 +308,21 @@ impl CompressedEmbedding {
         // Random initialization for factors (in practice, use SVD).
         let factor_u = Tensor::randn(&[vocab, rank]);
         let factor_v = Tensor::randn(&[rank, dim]);
-        CompressedEmbedding { factor_u, factor_v, vocab_size: vocab, embed_dim: dim, rank }
+        CompressedEmbedding {
+            factor_u,
+            factor_v,
+            vocab_size: vocab,
+            embed_dim: dim,
+            rank,
+        }
     }
 
     /// Lookup: reconstruct embedding for a token via U[token] @ V.
     pub fn lookup(&self, token: usize) -> Tensor {
         let u_row = Tensor::from_vec(
-            self.factor_u.data().iter()
+            self.factor_u
+                .data()
+                .iter()
                 .skip(token * self.rank)
                 .take(self.rank)
                 .copied()
@@ -358,7 +375,12 @@ impl MixedSparsity {
     /// Analyze per-layer sensitivity to pruning.
     ///
     /// Layers that lose more accuracy when pruned get lower sparsity targets.
-    pub fn analyze(model: &dyn Module, inputs: &Tensor, targets: &Tensor, loss_fn: &dyn Loss) -> Self {
+    pub fn analyze(
+        model: &dyn Module,
+        inputs: &Tensor,
+        targets: &Tensor,
+        loss_fn: &dyn Loss,
+    ) -> Self {
         let params = model.parameters();
         let baseline_loss = {
             let out = model.forward(inputs);
@@ -404,7 +426,10 @@ impl MixedSparsity {
             *s = (*s * scale).clamp(0.05, 0.9);
         }
 
-        MixedSparsity { layer_sparsity, sensitivity }
+        MixedSparsity {
+            layer_sparsity,
+            sensitivity,
+        }
     }
 
     /// Get the recommended sparsity for layer `i`.
@@ -473,7 +498,8 @@ impl ProgressiveShrinking {
         abs_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let threshold = abs_vals[n_prune.min(n - 1)];
 
-        let pruned: Vec<f32> = data.iter()
+        let pruned: Vec<f32> = data
+            .iter()
             .map(|v| if v.abs() <= threshold { 0.0 } else { *v })
             .collect();
 
@@ -500,7 +526,9 @@ pub struct StructuredPruner {
 
 impl StructuredPruner {
     pub fn new(prune_ratio: f32, num_layers: usize) -> Self {
-        StructuredPruner { prune_ratios: vec![prune_ratio; num_layers] }
+        StructuredPruner {
+            prune_ratios: vec![prune_ratio; num_layers],
+        }
     }
 
     /// Prune the least important output channels from a weight matrix [out, in].
@@ -515,7 +543,10 @@ impl StructuredPruner {
         // Compute importance per output channel (L2 norm of the row).
         let mut channel_scores: Vec<(usize, f32)> = (0..out_f)
             .map(|o| {
-                let norm: f32 = (0..in_f).map(|i| data[o * in_f + i].powi(2)).sum::<f32>().sqrt();
+                let norm: f32 = (0..in_f)
+                    .map(|i| data[o * in_f + i].powi(2))
+                    .sum::<f32>()
+                    .sqrt();
                 (o, norm)
             })
             .collect();
@@ -544,14 +575,18 @@ impl StructuredPruner {
     pub fn prune_linear(layer: &Linear, prune_ratio: f32) -> (Linear, Vec<usize>) {
         let (pruned_weight, kept) = Self::prune_channels(&layer.weight, prune_ratio);
         let pruned_bias = layer.bias.as_ref().map(|b| {
-            let bias_data: Vec<f32> = kept.iter()
+            let bias_data: Vec<f32> = kept
+                .iter()
                 .map(|&i| b.data().iter().nth(i).copied().unwrap_or(0.0))
                 .collect();
             Tensor::from_vec(bias_data, vec![kept.len()])
         });
         let new_out = kept.len();
         let new_in = pruned_weight.shape()[1];
-        let new_layer = Linear { weight: pruned_weight, bias: pruned_bias };
+        let new_layer = Linear {
+            weight: pruned_weight,
+            bias: pruned_bias,
+        };
         let _ = new_out;
         let _ = new_in;
         (new_layer, kept)
@@ -615,48 +650,57 @@ pub fn automl_search(
 
     // Baseline loss.
     let baseline_out = model.forward(inputs);
-    let baseline_loss = loss_fn.forward(&baseline_out, targets)
-        .data().iter().copied().next().unwrap_or(1.0);
+    let baseline_loss = loss_fn
+        .forward(&baseline_out, targets)
+        .data()
+        .iter()
+        .copied()
+        .next()
+        .unwrap_or(1.0);
 
     let mut strategies = Vec::new();
     let mut current_compression = 1.0f64;
 
     for (i, p) in params.iter().enumerate() {
-        if p.ndim() != 2 { continue; }
+        if p.ndim() != 2 {
+            continue;
+        }
 
         // Try different strategies and pick the best.
-        let candidates = [CompressionStrategy::None,
+        let candidates = [
+            CompressionStrategy::None,
             CompressionStrategy::Prune { ratio: 0.3 },
             CompressionStrategy::Prune { ratio: 0.5 },
             CompressionStrategy::Prune { ratio: 0.7 },
             CompressionStrategy::StructuredPrune { ratio: 0.3 },
             CompressionStrategy::Quantize { bits: 8 },
-            CompressionStrategy::Quantize { bits: 4 }];
+            CompressionStrategy::Quantize { bits: 4 },
+        ];
 
         // Evaluate each candidate by measuring parameter magnitude retention.
-        let original_norm: f32 = p.data().iter().map(|v| v.abs()).sum::<f32>() / p.len().max(1) as f32;
+        let original_norm: f32 =
+            p.data().iter().map(|v| v.abs()).sum::<f32>() / p.len().max(1) as f32;
 
-        let best = candidates.iter()
+        let best = candidates
+            .iter()
             .map(|s| {
                 let score = match s {
                     CompressionStrategy::None => 1.0,
                     CompressionStrategy::Prune { ratio } => {
                         let keep = 1.0 - ratio;
                         keep * (original_norm / original_norm.max(0.01))
-                    },
+                    }
                     CompressionStrategy::StructuredPrune { ratio } => {
                         1.0 - ratio * 0.5 // Structured pruning loses less quality.
-                    },
+                    }
                     CompressionStrategy::Quantize { bits } => {
                         1.0 - (32.0 / *bits as f32 - 1.0) * 0.05
-                    },
+                    }
                     _ => 0.8,
                 };
                 (s.clone(), score, s.size_factor())
             })
-            .max_by(|a, b| {
-                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap();
 
         strategies.push(best.0);
@@ -684,8 +728,8 @@ pub fn automl_search(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nn::{Linear, Sequential, ReLU};
     use crate::loss::MSELoss;
+    use crate::nn::{Linear, ReLU, Sequential};
 
     // 1. Weight Sharing
     #[test]
@@ -708,14 +752,18 @@ mod tests {
         for i in 0..n {
             data[i * n + i] = 1.0; // diagonal
         }
-        for i in 0..n/5 {
+        for i in 0..n / 5 {
             data[i * n + (i + 1) % n] = 0.5; // some off-diagonal
         }
         let tensor = Tensor::from_vec(data, vec![n, n]);
         let sparse = SparseMatrix::from_dense(&tensor, 0.01);
-        assert!(sparse.nnz < n + n/5 + 1);
+        assert!(sparse.nnz < n + n / 5 + 1);
         assert!(sparse.sparsity() > 0.9);
-        assert!(sparse.compression_ratio() > 1.0, "CSR should save memory: {}", sparse.compression_ratio());
+        assert!(
+            sparse.compression_ratio() > 1.0,
+            "CSR should save memory: {}",
+            sparse.compression_ratio()
+        );
     }
 
     #[test]
@@ -726,11 +774,27 @@ mod tests {
         let b = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let sparse = SparseMatrix::from_dense(&a, 0.01);
         let c = sparse.spmm(&b, 2); // n=2
-        // C = [[1*1+0+0, 1*2+0+0],[2*1+0+3*5, 2*2+0+3*6]] = [[1,2],[17,22]]
-        assert!((c[0] - 1.0).abs() < 1e-5, "C[0,0] should be 1, got {}", c[0]);
-        assert!((c[1] - 2.0).abs() < 1e-5, "C[0,1] should be 2, got {}", c[1]);
-        assert!((c[2] - 17.0).abs() < 1e-5, "C[1,0] should be 17, got {}", c[2]);
-        assert!((c[3] - 22.0).abs() < 1e-5, "C[1,1] should be 22, got {}", c[3]);
+                                    // C = [[1*1+0+0, 1*2+0+0],[2*1+0+3*5, 2*2+0+3*6]] = [[1,2],[17,22]]
+        assert!(
+            (c[0] - 1.0).abs() < 1e-5,
+            "C[0,0] should be 1, got {}",
+            c[0]
+        );
+        assert!(
+            (c[1] - 2.0).abs() < 1e-5,
+            "C[0,1] should be 2, got {}",
+            c[1]
+        );
+        assert!(
+            (c[2] - 17.0).abs() < 1e-5,
+            "C[1,0] should be 17, got {}",
+            c[2]
+        );
+        assert!(
+            (c[3] - 22.0).abs() < 1e-5,
+            "C[1,1] should be 22, got {}",
+            c[3]
+        );
     }
 
     #[test]
@@ -761,12 +825,8 @@ mod tests {
     // 4. Knowledge Transfer
     #[test]
     fn knowledge_transfer_loss_positive() {
-        let source = std::sync::Arc::new(
-            Sequential::new().add(Linear::new(4, 8, true))
-        );
-        let target = std::sync::Arc::new(
-            Sequential::new().add(Linear::new(4, 8, true))
-        );
+        let source = std::sync::Arc::new(Sequential::new().add(Linear::new(4, 8, true)));
+        let target = std::sync::Arc::new(Sequential::new().add(Linear::new(4, 8, true)));
         let kt = KnowledgeTransfer::new(source, target, 8, 8);
         let x = Tensor::randn(&[2, 4]);
         let loss = kt.transfer_loss(&x);
@@ -830,7 +890,13 @@ mod tests {
 
     #[test]
     fn progressive_soft_prune() {
-        let ps = ProgressiveShrinking { target_sparsity: 0.5, current_sparsity: 0.3, total_steps: 100, current_step: 50, warmup_steps: 10 };
+        let ps = ProgressiveShrinking {
+            target_sparsity: 0.5,
+            current_sparsity: 0.3,
+            total_steps: 100,
+            current_step: 50,
+            warmup_steps: 10,
+        };
         let t = Tensor::randn(&[4, 8]);
         let pruned = ps.apply_soft_prune(&t);
         // Some values should be zeroed.
@@ -850,7 +916,9 @@ mod tests {
     #[test]
     fn structured_pruning_keeps_important() {
         let weight = Tensor::from_vec(
-            (0..32).map(|i| if i < 16 { 10.0 } else { 0.01 }).collect::<Vec<_>>(),
+            (0..32)
+                .map(|i| if i < 16 { 10.0 } else { 0.01 })
+                .collect::<Vec<_>>(),
             vec![4, 8],
         );
         let (_pruned, kept) = StructuredPruner::prune_channels(&weight, 0.5);

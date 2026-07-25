@@ -3,8 +3,8 @@
 use rust_nn::nn::Module;
 use rust_nn::optim::Adam;
 use rust_nn::rl::{
-    discounted_returns, sample_categorical, ActorCritic, BanditEnv, ChainEnv, Dqn,
-    Environment, Ppo, Reinforce, ReplayBuffer, Transition,
+    discounted_returns, sample_categorical, ActorCritic, BanditEnv, ChainEnv, Dqn, Environment,
+    Ppo, Reinforce, ReplayBuffer, Transition,
 };
 use rust_nn::tensor::Tensor;
 
@@ -16,7 +16,10 @@ fn categorical_sample_respects_distribution() {
     for _ in 0..2000 {
         counts[sample_categorical(&logits)] += 1;
     }
-    assert!(counts[2] > counts[0] + counts[1], "should mostly sample action 2");
+    assert!(
+        counts[2] > counts[0] + counts[1],
+        "should mostly sample action 2"
+    );
 }
 
 #[test]
@@ -53,11 +56,19 @@ fn td_error(agent: &Dqn, buf: &mut ReplayBuffer, n: usize) -> f32 {
     let batch = buf.sample(64);
     let mut total = 0.0f32;
     for tr in &batch {
-        let next_q = agent.target_net.forward(&Tensor::from_vec(tr.next_state.clone(), vec![1, n]));
+        let next_q = agent
+            .target_net
+            .forward(&Tensor::from_vec(tr.next_state.clone(), vec![1, n]));
         let next_qs: Vec<f32> = next_q.data().iter().copied().collect();
-        let max_next = if tr.done { 0.0 } else { next_qs.iter().copied().fold(f32::NEG_INFINITY, f32::max) };
+        let max_next = if tr.done {
+            0.0
+        } else {
+            next_qs.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+        };
         let target = tr.reward + agent.gamma * max_next;
-        let q_all = agent.q_net.forward(&Tensor::from_vec(tr.state.clone(), vec![1, n]));
+        let q_all = agent
+            .q_net
+            .forward(&Tensor::from_vec(tr.state.clone(), vec![1, n]));
         let qs: Vec<f32> = q_all.data().iter().copied().collect();
         total += (qs[tr.action] - target).abs();
     }
@@ -75,7 +86,10 @@ fn reinforce_learns_bandit() {
         agent.train_episode(&mut opt, &mut env);
     }
     let learned = greedy_action(&agent.policy, &[1.0]) == 0;
-    println!("REINFORCE greedy arm: {}", greedy_action(&agent.policy, &[1.0]));
+    println!(
+        "REINFORCE greedy arm: {}",
+        greedy_action(&agent.policy, &[1.0])
+    );
     assert!(learned, "REINFORCE should learn the best arm");
 }
 
@@ -91,7 +105,10 @@ fn actor_critic_learns_bandit() {
         agent.train_episode(&mut opt, &mut env);
     }
     let learned = greedy_action(&agent.actor, &[1.0]) == 0;
-    println!("Actor-Critic greedy arm: {}", greedy_action(&agent.actor, &[1.0]));
+    println!(
+        "Actor-Critic greedy arm: {}",
+        greedy_action(&agent.actor, &[1.0])
+    );
     assert!(learned, "Actor-Critic should learn the best arm");
 }
 
@@ -148,7 +165,13 @@ fn dqn_reduces_td_error() {
         while !done {
             let a = agent.act(&o);
             let (next, r, d) = env.step(a);
-            buf.push(Transition { state: o.clone(), action: a, reward: r, next_state: next.clone(), done: d });
+            buf.push(Transition {
+                state: o.clone(),
+                action: a,
+                reward: r,
+                next_state: next.clone(),
+                done: d,
+            });
             o = next;
             done = d;
         }
@@ -224,7 +247,10 @@ fn dqn_sync_target_changes_weights() {
         .collect();
     for (ta, oa) in target_after.iter().zip(online_after.iter()) {
         for (x, y) in ta.iter().zip(oa.iter()) {
-            assert!((x - y).abs() < 1e-5, "target should match online after sync");
+            assert!(
+                (x - y).abs() < 1e-5,
+                "target should match online after sync"
+            );
         }
     }
     // 3. And the target should differ from its pre-sync state somewhere.

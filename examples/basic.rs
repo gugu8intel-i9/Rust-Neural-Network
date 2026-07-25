@@ -72,7 +72,10 @@ fn main() {
     let softmax_input = Tensor::from_vec(vec![1.0, 2.0, 3.0], vec![3]);
     let softmax_out = softmax(&softmax_input);
     println!("Softmax([1,2,3]): {:?}", softmax_out.data());
-    println!("  (sum = {:.6})", softmax_out.sum().data().iter().copied().next().unwrap());
+    println!(
+        "  (sum = {:.6})",
+        softmax_out.sum().data().iter().copied().next().unwrap()
+    );
 
     // ==================== Neural Network ====================
     println!("\n3. Neural Network");

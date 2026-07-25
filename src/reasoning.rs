@@ -2,8 +2,8 @@
 //!
 //! Includes Chain of Thought (CoT), Tree of Thoughts (ToT), Swi-Reasoning, and Markovian RSA.
 
+use crate::nn::{Linear, Module, ReLU, Sequential};
 use crate::tensor::Tensor;
-use crate::nn::{Module, Sequential, Linear, ReLU};
 
 /// Swi-Reasoning: Switch-Thinking in Latent and Explicit spaces.
 ///
@@ -20,11 +20,9 @@ pub struct SwiReasoning {
 
 impl SwiReasoning {
     pub fn new(hidden_dim: usize, max_switch_count: usize, entropy_threshold: f32) -> Self {
-        let latent_layer = Sequential::new()
-            .add(Linear::new(hidden_dim, hidden_dim, true));
-        let explicit_layer = Sequential::new()
-            .add(Linear::new(hidden_dim, hidden_dim, true));
-            
+        let latent_layer = Sequential::new().add(Linear::new(hidden_dim, hidden_dim, true));
+        let explicit_layer = Sequential::new().add(Linear::new(hidden_dim, hidden_dim, true));
+
         SwiReasoning {
             latent_layer,
             explicit_layer,
@@ -47,23 +45,24 @@ impl Module for SwiReasoning {
         let mut current_state = input.clone();
         let mut switches = 0;
         let mut using_latent = true;
-        
-        for _ in 0..4 { // Max thinking steps simulation
+
+        for _ in 0..4 {
+            // Max thinking steps simulation
             let confidence = self.calculate_confidence(&current_state);
-            
+
             // Dynamic switching logic (Swi-Reasoning)
             if confidence < self.entropy_threshold && switches < self.max_switch_count {
                 using_latent = !using_latent; // Switch mode
                 switches += 1;
             }
-            
+
             if using_latent {
                 current_state = self.latent_layer.forward(&current_state);
             } else {
                 current_state = self.explicit_layer.forward(&current_state);
             }
         }
-        
+
         current_state
     }
 
@@ -104,14 +103,14 @@ impl Module for MarkovianRSA {
             // to simulate trace state.
             traces.push(input.clone());
         }
-        
+
         // Aggregate tail ends of chunks (Markovian state transition)
         // Here we sum as a simplified proxy for concatenation/aggregation
         let mut aggregated = traces[0].clone();
         for t in traces.iter().skip(1) {
             aggregated = aggregated.add(t);
         }
-        
+
         // Final projection mapping back to original dimension
         aggregated
     }
@@ -214,7 +213,12 @@ impl TreeOfThoughts {
     /// - `num_steps`: tree depth.
     /// - `branching_factor`: candidates per beam per step.
     /// - `beam_width`: beams kept after each pruning step.
-    pub fn new(hidden_dim: usize, num_steps: usize, branching_factor: usize, beam_width: usize) -> Self {
+    pub fn new(
+        hidden_dim: usize,
+        num_steps: usize,
+        branching_factor: usize,
+        beam_width: usize,
+    ) -> Self {
         let thought_layer = Sequential::new()
             .add(Linear::new(hidden_dim, hidden_dim, true))
             .add(ReLU)
@@ -275,8 +279,7 @@ impl Module for TreeOfThoughts {
             }
 
             // Keep the top `beam_width` candidates by score (beam search).
-            candidates
-                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             candidates.truncate(self.beam_width);
 
             beams = candidates.into_iter().map(|(s, _)| s).collect();

@@ -83,7 +83,9 @@ impl GrpoGroup {
     /// Compute group-relative advantages: A_i = (r_i - mean) / std.
     pub fn advantages(&self) -> Vec<f32> {
         let n = self.rewards.len();
-        if n == 0 { return vec![]; }
+        if n == 0 {
+            return vec![];
+        }
         let mean: f32 = self.rewards.iter().sum::<f32>() / n as f32;
         let variance: f32 = self.rewards.iter().map(|r| (r - mean).powi(2)).sum::<f32>() / n as f32;
         let std = variance.sqrt().max(1e-8);
@@ -92,7 +94,8 @@ impl GrpoGroup {
 
     /// Best response index (highest reward).
     pub fn best_index(&self) -> usize {
-        self.rewards.iter()
+        self.rewards
+            .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(i, _)| i)
@@ -128,7 +131,10 @@ pub struct GrpoStats {
 
 impl GrpoTrainer {
     pub fn new(config: GrpoConfig) -> Self {
-        GrpoTrainer { config, history: Vec::new() }
+        GrpoTrainer {
+            config,
+            history: Vec::new(),
+        }
     }
 
     /// Process a batch of GRPO groups: compute advantages and update statistics.
@@ -147,11 +153,19 @@ impl GrpoTrainer {
             let advantages = group.advantages();
 
             let mean_r: f32 = group.rewards.iter().sum::<f32>() / group.rewards.len().max(1) as f32;
-            let var_r: f32 = group.rewards.iter().map(|r| (r - mean_r).powi(2)).sum::<f32>()
+            let var_r: f32 = group
+                .rewards
+                .iter()
+                .map(|r| (r - mean_r).powi(2))
+                .sum::<f32>()
                 / group.rewards.len().max(1) as f32;
             let std_r = var_r.sqrt();
             let mean_adv: f32 = advantages.iter().sum::<f32>() / advantages.len().max(1) as f32;
-            let best = group.rewards.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let best = group
+                .rewards
+                .iter()
+                .cloned()
+                .fold(f32::NEG_INFINITY, f32::max);
             let worst = group.rewards.iter().cloned().fold(f32::INFINITY, f32::min);
 
             let stats = GrpoStats {
@@ -166,7 +180,11 @@ impl GrpoTrainer {
             if step % 10 == 0 {
                 println!(
                     "  GRPO step {}: mean_r={:.3} std_r={:.3} best={:.3} worst={:.3}",
-                    step, stats.mean_reward, stats.std_reward, stats.best_reward, stats.worst_reward
+                    step,
+                    stats.mean_reward,
+                    stats.std_reward,
+                    stats.best_reward,
+                    stats.worst_reward
                 );
             }
 
@@ -209,7 +227,12 @@ impl RewardScore {
 
     /// Convert to a vector for analysis.
     pub fn to_vec(&self) -> Vec<f32> {
-        vec![self.correctness, self.readability, self.style, self.aesthetics]
+        vec![
+            self.correctness,
+            self.readability,
+            self.style,
+            self.aesthetics,
+        ]
     }
 }
 
@@ -273,22 +296,33 @@ impl RewardModel {
         // Heuristic checks for obvious issues.
         let open_braces = code.matches('{').count();
         let close_braces = code.matches('}').count();
-        if open_braces == close_braces { score += 0.2; }
-        if code.contains("return") || code.contains("fn ") { score += 0.15; }
-        if !code.contains("todo!") && !code.contains("unimplemented!") { score += 0.15; }
+        if open_braces == close_braces {
+            score += 0.2;
+        }
+        if code.contains("return") || code.contains("fn ") {
+            score += 0.15;
+        }
+        if !code.contains("todo!") && !code.contains("unimplemented!") {
+            score += 0.15;
+        }
         score.clamp(0.0, 1.0)
     }
 
     fn score_readability(&self, code: &str) -> f32 {
         let lines: Vec<&str> = code.lines().collect();
-        if lines.is_empty() { return 0.0; }
+        if lines.is_empty() {
+            return 0.0;
+        }
         let mut score = 0.0f32;
         // Average line length (sweet spot: 40-80 chars).
         let avg_len: f32 = lines.iter().map(|l| l.len() as f32).sum::<f32>() / lines.len() as f32;
-        if avg_len > 0.0 && avg_len < 100.0 { score += 0.3; }
+        if avg_len > 0.0 && avg_len < 100.0 {
+            score += 0.3;
+        }
         // Snake_case function names (Rust convention).
         let fn_count = code.matches("fn ").count();
-        let snake_count = code.lines()
+        let snake_count = code
+            .lines()
             .filter(|l| l.contains("fn ") && l.chars().filter(|c| c.is_uppercase()).count() == 0)
             .count();
         if fn_count > 0 {
@@ -297,14 +331,28 @@ impl RewardModel {
             score += 0.3;
         }
         // Comments present.
-        let comment_count = code.lines().filter(|l| l.trim_start().starts_with("//")).count();
-        if comment_count > 0 { score += 0.2; }
+        let comment_count = code
+            .lines()
+            .filter(|l| l.trim_start().starts_with("//"))
+            .count();
+        if comment_count > 0 {
+            score += 0.2;
+        }
         // Low nesting depth (no deeply nested code).
-        let max_depth = code.chars().fold((0i32, 0i32), |(depth, max), c| {
-            let d = match c { '{' => depth + 1, '}' => depth - 1, _ => depth };
-            (d, max.max(d))
-        }).1;
-        if max_depth <= 4 { score += 0.2; }
+        let max_depth = code
+            .chars()
+            .fold((0i32, 0i32), |(depth, max), c| {
+                let d = match c {
+                    '{' => depth + 1,
+                    '}' => depth - 1,
+                    _ => depth,
+                };
+                (d, max.max(d))
+            })
+            .1;
+        if max_depth <= 4 {
+            score += 0.2;
+        }
         score.clamp(0.0, 1.0)
     }
 
@@ -312,38 +360,61 @@ impl RewardModel {
         let mut score = 0.5f32;
         // Consistent indentation (check if lines use consistent leading whitespace).
         let lines: Vec<&str> = code.lines().filter(|l| !l.trim().is_empty()).collect();
-        if lines.is_empty() { return 0.5; }
-        let indent_units: HashSet<usize> = lines.iter()
+        if lines.is_empty() {
+            return 0.5;
+        }
+        let indent_units: HashSet<usize> = lines
+            .iter()
             .filter_map(|l| {
                 let ws = l.len() - l.trim_start().len();
-                if ws > 0 { Some(ws % 4) } else { None }
+                if ws > 0 {
+                    Some(ws % 4)
+                } else {
+                    None
+                }
             })
             .collect();
-        if indent_units.len() <= 1 { score += 0.3; } // Consistent indentation.
-        // No trailing whitespace.
-        let trailing = code.lines().filter(|l| l.ends_with(' ') || l.ends_with('\t')).count();
-        if trailing == 0 { score += 0.2; }
+        if indent_units.len() <= 1 {
+            score += 0.3;
+        } // Consistent indentation.
+          // No trailing whitespace.
+        let trailing = code
+            .lines()
+            .filter(|l| l.ends_with(' ') || l.ends_with('\t'))
+            .count();
+        if trailing == 0 {
+            score += 0.2;
+        }
         score.clamp(0.0, 1.0)
     }
 
     fn score_aesthetics(&self, code: &str) -> f32 {
         let lines = code.lines().count();
         let non_empty = code.lines().filter(|l| !l.trim().is_empty()).count();
-        if non_empty == 0 { return 0.0; }
+        if non_empty == 0 {
+            return 0.0;
+        }
         let mut score = 0.0f32;
         // Conciseness: shorter code is more elegant (up to a point).
         let chars_per_line = code.len() as f32 / non_empty as f32;
-        if chars_per_line < 80.0 { score += 0.4; }
+        if chars_per_line < 80.0 {
+            score += 0.4;
+        }
         // Low comment-to-code ratio (elegant code is self-documenting).
-        let comment_chars: usize = code.lines()
+        let comment_chars: usize = code
+            .lines()
             .filter(|l| l.trim_start().starts_with("//"))
             .map(|l| l.len())
             .sum::<usize>();
         let ratio = comment_chars as f32 / code.len().max(1) as f32;
-        if ratio < 0.3 { score += 0.3; }
+        if ratio < 0.3 {
+            score += 0.3;
+        }
         // No excessive blank lines.
         let blank_ratio = (lines - non_empty) as f32 / lines.max(1) as f32;
-        if blank_ratio < 0.2 { score += 0.3; }
+        if blank_ratio < 0.2 {
+            score += 0.3;
+        }
         score.clamp(0.0, 1.0)
     }
 }
@@ -374,10 +445,10 @@ pub struct AdversarialEpisode {
 #[derive(Debug, Clone)]
 pub struct CoEvolutionStats {
     pub round: usize,
-    pub code_pass_rate: f32,     // Fraction of code that passes tests.
-    pub test_break_rate: f32,    // Fraction of tests that catch bugs.
-    pub avg_code_reward: f32,    // Average multi-dimensional reward.
-    pub difficulty: f32,         // Increasing difficulty metric.
+    pub code_pass_rate: f32,  // Fraction of code that passes tests.
+    pub test_break_rate: f32, // Fraction of tests that catch bugs.
+    pub avg_code_reward: f32, // Average multi-dimensional reward.
+    pub difficulty: f32,      // Increasing difficulty metric.
 }
 
 /// Adversarial co-evolution trainer.
@@ -393,7 +464,7 @@ pub struct CoEvolutionTrainer {
     pub reward_model: RewardModel,
     pub round: usize,
     pub stats: Vec<CoEvolutionStats>,
-#[allow(dead_code)]
+    #[allow(dead_code)]
     pub config: GrpoConfig,
 }
 
@@ -414,9 +485,9 @@ impl CoEvolutionTrainer {
     pub fn co_evolve_round(
         &mut self,
         problems: &[String],
-        code_samples: &HashMap<String, Vec<String>>,  // problem → G code samples
-        test_samples: &HashMap<String, Vec<String>>,  // problem → G test samples
-        test_results: &[(String, String, bool)],      // (problem, code_idx, passed)
+        code_samples: &HashMap<String, Vec<String>>, // problem → G code samples
+        test_samples: &HashMap<String, Vec<String>>, // problem → G test samples
+        test_results: &[(String, String, bool)],     // (problem, code_idx, passed)
     ) -> Vec<AdversarialEpisode> {
         self.round += 1;
         let mut episodes = Vec::new();
@@ -431,18 +502,25 @@ impl CoEvolutionTrainer {
         for problem in problems {
             let codes = code_samples.get(problem).cloned().unwrap_or_default();
             let tests = test_samples.get(problem).cloned().unwrap_or_default();
-            if codes.is_empty() { continue; }
+            if codes.is_empty() {
+                continue;
+            }
 
             let mut code_rewards = Vec::with_capacity(codes.len());
             for (i, code) in codes.iter().enumerate() {
                 // Did this code pass any test?
-                let passed = test_results.iter()
+                let passed = test_results
+                    .iter()
                     .any(|(p, ci, pass)| p == problem && ci == &i.to_string() && *pass);
                 let score = self.reward_model.score(code, Some(passed));
                 code_rewards.push(score.total(&self.reward_model.weights));
                 total_reward += code_rewards.last().unwrap();
 
-                if passed { code_passes += 1; } else { test_breaks += 1; }
+                if passed {
+                    code_passes += 1;
+                } else {
+                    test_breaks += 1;
+                }
 
                 episodes.push(AdversarialEpisode {
                     problem: problem.clone(),
@@ -463,13 +541,17 @@ impl CoEvolutionTrainer {
 
             // Test reward: tests that caught bugs get higher reward.
             if !tests.is_empty() {
-                let test_rewards: Vec<f32> = tests.iter().map(|_| {
-                    // Higher reward if more code samples fail this test.
-                    let fail_count = test_results.iter()
-                        .filter(|(p, _, pass)| p == problem && !pass)
-                        .count();
-                    fail_count as f32 / n_codes.max(1) as f32
-                }).collect();
+                let test_rewards: Vec<f32> = tests
+                    .iter()
+                    .map(|_| {
+                        // Higher reward if more code samples fail this test.
+                        let fail_count = test_results
+                            .iter()
+                            .filter(|(p, _, pass)| p == problem && !pass)
+                            .count();
+                        fail_count as f32 / n_codes.max(1) as f32
+                    })
+                    .collect();
 
                 test_groups.push(GrpoGroup {
                     prompt: problem.clone(),
@@ -520,17 +602,17 @@ pub struct FileNode {
 /// Edge in the code structure graph.
 #[derive(Debug, Clone)]
 pub struct StructureEdge {
-    pub from: String,  // Function/type name.
-    pub to: String,    // Function/type name.
+    pub from: String, // Function/type name.
+    pub to: String,   // Function/type name.
     pub edge_type: StructureEdgeType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StructureEdgeType {
-    Calls,       // Function A calls function B.
-    Contains,    // Module A contains function B.
-    Implements,  // Type A implements trait B.
-    References,  // Type A references type B.
+    Calls,      // Function A calls function B.
+    Contains,   // Module A contains function B.
+    Implements, // Type A implements trait B.
+    References, // Type A references type B.
 }
 
 /// Dual-graph representation of a code repository.
@@ -574,7 +656,8 @@ impl RepoGraph {
 
     /// Get all files that depend on a given file (reverse dependency lookup).
     pub fn dependents(&self, path: &str) -> Vec<&String> {
-        self.files.iter()
+        self.files
+            .iter()
             .filter(|(_, node)| node.imports.iter().any(|imp| imp == path))
             .map(|(p, _)| p)
             .collect()
@@ -582,14 +665,16 @@ impl RepoGraph {
 
     /// Get all files that a given file depends on.
     pub fn dependencies(&self, path: &str) -> Vec<&String> {
-        self.files.get(path)
+        self.files
+            .get(path)
             .map(|node| node.imports.iter().collect())
             .unwrap_or_default()
     }
 
     /// Get all functions called by a given function.
     pub fn called_functions(&self, func: &str) -> Vec<&String> {
-        self.structure_edges.iter()
+        self.structure_edges
+            .iter()
             .filter(|e| e.from == func && e.edge_type == StructureEdgeType::Calls)
             .map(|e| &e.to)
             .collect()
@@ -641,7 +726,9 @@ impl RepoGraph {
             cycles.push(path[cycle_start..].to_vec());
             return;
         }
-        if visited.contains(node) { return; }
+        if visited.contains(node) {
+            return;
+        }
         visited.insert(node.to_string());
         path.push(node.to_string());
 
@@ -654,10 +741,14 @@ impl RepoGraph {
     }
 
     /// Number of files in the repo.
-    pub fn num_files(&self) -> usize { self.files.len() }
+    pub fn num_files(&self) -> usize {
+        self.files.len()
+    }
 
     /// Number of structural relationships.
-    pub fn num_edges(&self) -> usize { self.structure_edges.len() }
+    pub fn num_edges(&self) -> usize {
+        self.structure_edges.len()
+    }
 
     /// Summary string.
     pub fn summary(&self) -> String {
@@ -672,7 +763,9 @@ impl RepoGraph {
 }
 
 impl Default for RepoGraph {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Parse a Rust source file into a FileNode (extracting imports and exports).
@@ -695,7 +788,9 @@ pub fn parse_rust_file(path: &str, source: &str) -> FileNode {
             }
             if trimmed.contains("crate::") {
                 // Internal import — resolve to a file path.
-                let parts: Vec<&str> = trimmed.split_whitespace().nth(1)
+                let parts: Vec<&str> = trimmed
+                    .split_whitespace()
+                    .nth(1)
                     .unwrap_or("")
                     .trim_end_matches(';')
                     .split("::")
@@ -707,18 +802,25 @@ pub fn parse_rust_file(path: &str, source: &str) -> FileNode {
         }
         // pub fn / pub struct — exports.
         if trimmed.starts_with("pub fn ") || trimmed.starts_with("pub async fn ") {
-            let name = trimmed.split('(').next()
+            let name = trimmed
+                .split('(')
+                .next()
                 .and_then(|s| s.split_whitespace().nth(2))
                 .unwrap_or("")
                 .to_string();
-            if !name.is_empty() { exports.push(name); }
+            if !name.is_empty() {
+                exports.push(name);
+            }
         }
         if trimmed.starts_with("pub struct ") || trimmed.starts_with("pub enum ") {
-            let name = trimmed.split(|c: char| !c.is_alphanumeric() && c != '_')
+            let name = trimmed
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
                 .find(|s| !s.is_empty() && *s != "pub" && *s != "struct" && *s != "enum")
                 .unwrap_or("")
                 .to_string();
-            if !name.is_empty() { exports.push(name); }
+            if !name.is_empty() {
+                exports.push(name);
+            }
         }
     }
 
@@ -757,7 +859,10 @@ mod tests {
         };
         let adv = group.advantages();
         let std: f32 = (adv.iter().map(|a| a.powi(2)).sum::<f32>() / adv.len() as f32).sqrt();
-        assert!((std - 1.0).abs() < 0.01, "advantages should be unit std: {std}");
+        assert!(
+            (std - 1.0).abs() < 0.01,
+            "advantages should be unit std: {std}"
+        );
     }
 
     #[test]
@@ -805,7 +910,11 @@ mod tests {
         let model = RewardModel::new(RewardWeights::default());
         let code = "// Good function\nfn calculate_sum(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
         let score = model.score(code, None);
-        assert!(score.readability > 0.5, "readable code should score > 0.5: {}", score.readability);
+        assert!(
+            score.readability > 0.5,
+            "readable code should score > 0.5: {}",
+            score.readability
+        );
     }
 
     #[test]
@@ -815,13 +924,19 @@ mod tests {
         let verbose = "fn add(a: i32, b: i32) -> i32 {\n    // This function adds two numbers\n    // It takes two i32 parameters\n    // And returns their sum\n    let result = a + b;\n    return result;\n}\n";
         let score_c = model.score(concise, None);
         let score_v = model.score(verbose, None);
-        assert!(score_c.aesthetics >= score_v.aesthetics, "concise should score >= verbose");
+        assert!(
+            score_c.aesthetics >= score_v.aesthetics,
+            "concise should score >= verbose"
+        );
     }
 
     #[test]
     fn reward_total_weighted() {
         let model = RewardModel::new(RewardWeights {
-            correctness: 0.5, readability: 0.2, style: 0.15, aesthetics: 0.15,
+            correctness: 0.5,
+            readability: 0.2,
+            style: 0.15,
+            aesthetics: 0.15,
         });
         let reward = model.reward("fn add(a: i32, b: i32) -> i32 { a + b }\n", Some(true));
         assert!(reward > 0.5, "good code should have high reward: {reward}");
@@ -868,13 +983,19 @@ mod tests {
     fn repo_graph_called_functions() {
         let mut graph = RepoGraph::new();
         graph.add_edge(StructureEdge {
-            from: "func_a".into(), to: "func_b".into(), edge_type: StructureEdgeType::Calls,
+            from: "func_a".into(),
+            to: "func_b".into(),
+            edge_type: StructureEdgeType::Calls,
         });
         graph.add_edge(StructureEdge {
-            from: "func_a".into(), to: "func_c".into(), edge_type: StructureEdgeType::Calls,
+            from: "func_a".into(),
+            to: "func_c".into(),
+            edge_type: StructureEdgeType::Calls,
         });
         graph.add_edge(StructureEdge {
-            from: "func_b".into(), to: "func_d".into(), edge_type: StructureEdgeType::Calls,
+            from: "func_b".into(),
+            to: "func_d".into(),
+            edge_type: StructureEdgeType::Calls,
         });
 
         let called = graph.called_functions("func_a");
@@ -896,17 +1017,25 @@ fn private_helper() {}
         assert!(node.exports.contains(&"calculate".to_string()));
         assert!(node.exports.contains(&"Config".to_string()));
         assert!(!node.exports.contains(&"private_helper".to_string()));
-        assert!(node.dependencies.contains(&"crate".to_string()) || node.imports.contains(&"src/lib.rs".to_string()));
+        assert!(
+            node.dependencies.contains(&"crate".to_string())
+                || node.imports.contains(&"src/lib.rs".to_string())
+        );
     }
 
     #[test]
     fn repo_graph_summary() {
         let mut graph = RepoGraph::new();
         graph.add_file(FileNode {
-            path: "a.rs".into(), imports: vec![], exports: vec!["f".into()], dependencies: vec![],
+            path: "a.rs".into(),
+            imports: vec![],
+            exports: vec!["f".into()],
+            dependencies: vec![],
         });
         graph.add_edge(StructureEdge {
-            from: "f".into(), to: "g".into(), edge_type: StructureEdgeType::Calls,
+            from: "f".into(),
+            to: "g".into(),
+            edge_type: StructureEdgeType::Calls,
         });
         let s = graph.summary();
         assert!(s.contains("1 files"));
@@ -917,28 +1046,30 @@ fn private_helper() {}
 
     #[test]
     fn co_evolution_runs() {
-        let mut trainer = CoEvolutionTrainer::new(
-            GrpoConfig::default(),
-            RewardWeights::default(),
-        );
+        let mut trainer = CoEvolutionTrainer::new(GrpoConfig::default(), RewardWeights::default());
 
         let problems = vec!["write add function".to_string()];
         let mut code_samples = HashMap::new();
-        code_samples.insert("write add function".to_string(), vec![
-            "fn add(a: i32, b: i32) -> i32 { a + b }".to_string(),
-            "fn add(a, b) { a + b }".to_string(),
-        ]);
+        code_samples.insert(
+            "write add function".to_string(),
+            vec![
+                "fn add(a: i32, b: i32) -> i32 { a + b }".to_string(),
+                "fn add(a, b) { a + b }".to_string(),
+            ],
+        );
         let mut test_samples = HashMap::new();
-        test_samples.insert("write add function".to_string(), vec![
-            "assert_eq!(add(1, 2), 3);".to_string(),
-        ]);
+        test_samples.insert(
+            "write add function".to_string(),
+            vec!["assert_eq!(add(1, 2), 3);".to_string()],
+        );
 
         let test_results = vec![
             ("write add function".to_string(), "0".to_string(), true),
             ("write add function".to_string(), "1".to_string(), false),
         ];
 
-        let episodes = trainer.co_evolve_round(&problems, &code_samples, &test_samples, &test_results);
+        let episodes =
+            trainer.co_evolve_round(&problems, &code_samples, &test_samples, &test_results);
         assert!(!episodes.is_empty());
         assert!(trainer.stats.len() == 1);
         assert!(trainer.stats[0].code_pass_rate > 0.0);
