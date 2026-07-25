@@ -109,6 +109,13 @@ pub enum Op {
     /// `half_dim = dim/2`. Forward applies the GPT-NeoX/Llama rotate-half convention;
     /// backward is exact (transpose of the rotation = negate sin).
     Rope(Tensor, Vec<f32>, Vec<f32>, usize),
+    /// Fused **linear (kernelized) attention** — an O(N) alternative to FlashAttention.
+    /// `(q, k, v, scale, eps, causal, kernel_u8)` where q,k,v are `[batch, seq, d]`. Replaces the
+    /// softmax kernel `exp(q·k)` with a decomposable feature map φ so the KV state
+    /// `S = Σ φ(k)⊗v` and normaliser `z = Σ φ(k)` are built once (a single `φ(K)ᵀ·V` GEMM), then
+    /// each query is answered with `φ(Q)·S`. O(N·d²) forward and backward; no N×N matrix.
+    /// `kernel_u8`: 0 = ELU+1, 1 = ReLU² (see `linear_attention::KernelKind`).
+    LinearAttention(Tensor, Tensor, Tensor, f32, f32, bool, u8),
 }
 
 /// Helper: extract the input tensors from any Op variant (for graph traversal).
@@ -128,6 +135,7 @@ impl Op {
             Op::ReLU(a) | Op::Transpose(a) | Op::Softplus(a) | Op::Sigmoid(a) => vec![a],
             Op::Reshape(a, _) | Op::Sum(a, _) | Op::Permute(a, _) => vec![a],
             Op::Rope(a, _, _, _) => vec![a],
+            Op::LinearAttention(q, k, v, _, _, _, _) => vec![q, k, v],
             Op::FlashAttention(q, k, v, _) => vec![q, k, v],
             Op::SelectiveScan(d, b, c, u, a) => vec![d, b, c, u, a],
             Op::LayerNorm(a, g, b, _) => vec![a, g, b],
@@ -608,6 +616,67 @@ impl Tensor {
                 k.clone(),
                 v.clone(),
                 scale,
+            )));
+        }
+        res
+    }
+
+    /// Fused **linear (kernelized) attention** — an O(N) alternative to FlashAttention.
+    ///
+    /// Computes `out_t = (φ(q_t)· Σ_{j∈mask(t)} φ(k_j)⊗v_j) / (φ(q_t)· Σ_{j∈mask(t)} φ(k_j) + eps)`
+    /// for `[batch, seq, d]` inputs, where `φ` is a decomposable non-negative feature map. Because
+    /// the kernel `φ(q)·φ(k)` is a plain dot product, the KV state `S` and normaliser `z` are built
+    /// once (a single `φ(K)ᵀ·V` GEMM in the non-causal case) and reused for every query — **O(N·d²)**
+    /// instead of FlashAttention's O(N²·d), with no N×N matrix in compute or memory.
+    ///
+    /// * `scale` — applied to q and k before `φ` (use `1/√d` to mimic softmax scaling).
+    /// * `causal` — if true, position t attends only to 0..=t (autoregressive).
+    /// * `kernel` — [`crate::linear_attention::KernelKind`] (ELU+1 or ReLU²).
+    ///
+    /// Fully differentiable (exact O(N·d²) backward). All matmuls go through the BLAS `sgemm`.
+    pub fn linear_attention(
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        scale: f32,
+        eps: f32,
+        causal: bool,
+        kernel: crate::linear_attention::KernelKind,
+    ) -> Tensor {
+        let qd = q.data();
+        let kd = k.data();
+        let vd = v.data();
+        let shape = qd.shape();
+        assert!(
+            shape.len() == 3 && shape == kd.shape() && shape == vd.shape(),
+            "linear_attention expects q,k,v of matching shape [batch, seq, d], got {:?}/{:?}/{:?}",
+            shape,
+            kd.shape(),
+            vd.shape()
+        );
+        let (batch, seq, d) = (shape[0], shape[1], shape[2]);
+
+        let q_flat: Vec<f32> = qd.iter().copied().collect();
+        let k_flat: Vec<f32> = kd.iter().copied().collect();
+        let v_flat: Vec<f32> = vd.iter().copied().collect();
+        let out = crate::linear_attention::linear_attention_forward(
+            &q_flat, &k_flat, &v_flat, batch, seq, d, scale, eps, causal, kernel,
+        );
+        let out = ArrayD::from_shape_vec(IxDyn(&[batch, seq, d]), out).unwrap();
+
+        let requires_grad = q.0.read().unwrap().requires_grad
+            || k.0.read().unwrap().requires_grad
+            || v.0.read().unwrap().requires_grad;
+        let res = Tensor::new(out, requires_grad);
+        if requires_grad {
+            res.0.write().unwrap().creator = Some(Arc::new(Op::LinearAttention(
+                q.clone(),
+                k.clone(),
+                v.clone(),
+                scale,
+                eps,
+                causal,
+                kernel.to_u8(),
             )));
         }
         res
@@ -1349,6 +1418,43 @@ impl Tensor {
                     }
                     if let Some(g) = dv {
                         acc(&mut grad_map, v, g);
+                    }
+                }
+                Op::LinearAttention(q, k, v, scale, eps, causal, kernel_u8) => {
+                    let kind = crate::linear_attention::KernelKind::from_u8(*kernel_u8);
+                    let qd = q.0.read().unwrap().data.clone();
+                    let kd = k.0.read().unwrap().data.clone();
+                    let vd = v.0.read().unwrap().data.clone();
+                    let shape = qd.shape();
+                    let (batch, seq, d) = (shape[0], shape[1], shape[2]);
+                    let q_flat: Vec<f32> = qd.iter().copied().collect();
+                    let k_flat: Vec<f32> = kd.iter().copied().collect();
+                    let v_flat: Vec<f32> = vd.iter().copied().collect();
+                    let g_flat: Vec<f32> = grad.iter().copied().collect();
+                    let (dq, dk, dv) = crate::linear_attention::linear_attention_backward(
+                        &q_flat, &k_flat, &v_flat, &g_flat, batch, seq, d, *scale, *eps, *causal,
+                        kind,
+                    );
+                    if q.requires_grad() {
+                        acc(
+                            &mut grad_map,
+                            q,
+                            ArrayD::from_shape_vec(IxDyn(shape), dq).unwrap(),
+                        );
+                    }
+                    if k.requires_grad() {
+                        acc(
+                            &mut grad_map,
+                            k,
+                            ArrayD::from_shape_vec(IxDyn(shape), dk).unwrap(),
+                        );
+                    }
+                    if v.requires_grad() {
+                        acc(
+                            &mut grad_map,
+                            v,
+                            ArrayD::from_shape_vec(IxDyn(shape), dv).unwrap(),
+                        );
                     }
                 }
                 Op::SelectiveScan(delta, b_vec, c_vec, u, a) => {

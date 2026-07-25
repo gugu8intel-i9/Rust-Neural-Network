@@ -58,6 +58,7 @@ pub mod grpo;
 pub mod gui;
 pub mod int8;
 pub mod interactive;
+pub mod linear_attention;
 pub mod looped_transformer;
 pub mod loss;
 pub mod mamba;
@@ -117,6 +118,7 @@ pub use grpo::{
 pub use gui::{full_dashboard, launch, tensor_heatmap_html, ModelDashboard, TrainingDashboard};
 pub use int8::{Int8Linear, Int8Weights};
 pub use interactive::{run_repl, Session};
+pub use linear_attention::{KernelKind, LinearAttention as LinearAttentionLayer};
 pub use looped_transformer::{
     LoopedTransformer, MultiHeadAttention, Transformer, TransformerBlock,
 };

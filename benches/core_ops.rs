@@ -1,6 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rust_nn::blas;
 use rust_nn::fused::{fused_linear, FusedActivation};
+use rust_nn::linear_attention::{linear_attention_forward, KernelKind};
 use rust_nn::nn::{Dropout, Linear, Module, ReLU, Sequential};
 use rust_nn::simd;
 use rust_nn::tensor::Tensor;
@@ -39,7 +40,53 @@ fn bench_simd_matmul(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_linear_vs_flash_attention(c: &mut Criterion) {
+    // The headline "super fast" comparison: linear (O(N·d²)) attention vs FlashAttention (O(N²·d))
+    // at increasing sequence lengths. Linear attention's cost grows linearly with N.
+    let mut group = c.benchmark_group("attention");
+    let (batch, d) = (2, 64);
+    for seq in [128, 512, 1024].iter() {
+        let q = Tensor::randn(&[batch, *seq, d]);
+        let k = Tensor::randn(&[batch, *seq, d]);
+        let v = Tensor::randn(&[batch, *seq, d]);
+        let scale = 1.0 / (d as f32).sqrt();
+
+        group.bench_function(format!("flash_seq{seq}"), |b| {
+            b.iter(|| {
+                black_box(Tensor::flash_attention(
+                    black_box(&q),
+                    black_box(&k),
+                    black_box(&v),
+                    scale,
+                ))
+            });
+        });
+        group.bench_function(format!("linear_seq{seq}"), |b| {
+            let qf: Vec<f32> = q.data().iter().copied().collect();
+            let kf: Vec<f32> = k.data().iter().copied().collect();
+            let vf: Vec<f32> = v.data().iter().copied().collect();
+            b.iter(|| {
+                black_box(linear_attention_forward(
+                    black_box(&qf),
+                    black_box(&kf),
+                    black_box(&vf),
+                    batch,
+                    *seq,
+                    d,
+                    scale,
+                    1e-6,
+                    false,
+                    KernelKind::Elu,
+                ))
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_blas_sgemm(c: &mut Criterion) {
+    // The BLAS engine: transpose-aware, B-panel cache-packed GEMM. The transposed-B variant is
+    // the exact shape the matmul BACKWARD now uses (∂L/∂A = ∂L/∂C · Bᵀ).
     // The BLAS engine: transpose-aware, B-panel cache-packed GEMM. The transposed-B variant is
     // the exact shape the matmul BACKWARD now uses (∂L/∂A = ∂L/∂C · Bᵀ).
     let mut group = c.benchmark_group("blas_sgemm");
@@ -181,6 +228,7 @@ criterion_group!(
     bench_matmul,
     bench_simd_matmul,
     bench_blas_sgemm,
+    bench_linear_vs_flash_attention,
     bench_dropout,
     bench_fused_linear,
     bench_elementwise,
