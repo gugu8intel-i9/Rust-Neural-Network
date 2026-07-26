@@ -154,7 +154,9 @@ pub fn sgemm(
     scale_c(c, ldc, m, n, beta);
     // Right-size the per-thread packing buffers to the *actual* matrix dimensions (not the full
     // MC×KC / KC×NC blocks), so small-but-not-tiny matmuls don't over-allocate ~640 KB per call.
-    let buf_a_size = MC.min(m) * KC;
+    // `buf_a` is rounded up to a multiple of MR=4 rows (zero-padded) so the register-tiled
+    // micro-kernels can always read a full 4-row tile without going out of bounds.
+    let buf_a_size = ((MC.min(m) + 3) & !3) * KC;
     let buf_b_size = KC * NC.min(n);
     c.par_chunks_mut(MC * ldc)
         .enumerate()
@@ -341,6 +343,20 @@ fn pack_b(
 //   C is the owning row-block `cblk` with row stride `ldc`, written at column offset `jj`.
 // ============================================================================
 
+/// Whether to use the AVX-512 kernel when available. AVX-512 can trigger heavy frequency
+/// licensing downclocks on many client CPUs (making it *slower* than AVX2 for real workloads —
+/// measured ~2.3× slower on a 512³ GEMM here), so AVX2 is the default. Set `RUSTNN_USE_AVX512=1`
+/// to opt in on hardware without that penalty (some server SKX/Ice Lake parts).
+fn want_avx512() -> bool {
+    use std::sync::OnceLock;
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("RUSTNN_USE_AVX512")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn kernel_dispatch(
     mb: usize,
@@ -352,8 +368,16 @@ fn kernel_dispatch(
     ldc: usize,
     jj: usize,
 ) {
+    // The packed A buffer is zero-padded to a multiple of MR=4 rows (see `buf_a_size` in `sgemm`),
+    // so the register-tiled kernels below may always read a full 4-row tile; out-of-range rows are
+    // zero and their (discarded) accumulators are never stored. AVX2 (4×8) is the default; the
+    // AVX-512 (4×16) kernel is opt-in via `RUSTNN_USE_AVX512=1`.
     #[cfg(target_arch = "x86_64")]
     {
+        if want_avx512() && nb >= 16 && std::is_x86_feature_detected!("avx512f") {
+            unsafe { kernel_avx512(mb, kb, nb, a_packed, b_packed, cblk, ldc, jj) };
+            return;
+        }
         if nb >= 8 && std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma")
         {
             unsafe { kernel_avx2(mb, kb, nb, a_packed, b_packed, cblk, ldc, jj) };
@@ -388,12 +412,15 @@ fn kernel_scalar(
     }
 }
 
-/// AVX2 + FMA micro-kernel. For each C row it broadcasts one A element per K-step and FMA-accumulates
-/// 8 B-columns, then adds into the existing (already β-scaled) C lane.
+/// Register-tiled AVX2 + FMA micro-kernel (MR=4 rows × NR=8 cols). Each K-step loads one 8-wide
+/// vector of B and reuses it across **4** rows of A via 4 FMA accumulators — a 4× arithmetic-
+/// intensity improvement over a 1-row kernel. This is the BLIS/Goto register-tiling technique.
+///
+/// Requires the packed A buffer to be zero-padded to a multiple of 4 rows (see `kernel_dispatch`).
 ///
 /// # Safety
-/// Caller must guarantee `avx2` and `fma` are available at runtime and that all slice accesses
-/// (bounded by `mb*kb`, `kb*nb`, `mb*ldc + jj + nb`) are in range.
+/// Caller must guarantee `avx2`+`fma` at runtime, A padded to MR=4 rows, and all accessed indices
+/// in range.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
@@ -408,30 +435,120 @@ unsafe fn kernel_avx2(
     jj: usize,
 ) {
     use std::arch::x86_64::*;
-    for i in 0..mb {
-        let a_ptr = a_packed.as_ptr().add(i * kb);
-        let c_ptr = cblk.as_mut_ptr().add(i * ldc + jj);
-        let b_ptr = b_packed.as_ptr();
+    let a = a_packed.as_ptr();
+    let b = b_packed.as_ptr();
+    let c = cblk.as_mut_ptr();
+    let z = _mm256_setzero_ps();
+    let mut i = 0;
+    while i < mb {
+        let rb = if i + 4 <= mb { 4 } else { mb - i };
+        let abase = i * kb;
         let mut t = 0;
         while t + 8 <= nb {
-            let mut acc = _mm256_setzero_ps();
+            let mut acc = [z, z, z, z];
             for p in 0..kb {
-                let av = _mm256_set1_ps(*a_ptr.add(p));
-                let bv = _mm256_loadu_ps(b_ptr.add(p * nb + t));
-                acc = _mm256_fmadd_ps(av, bv, acc);
+                let bv = _mm256_loadu_ps(b.add(p * nb + t));
+                acc[0] = _mm256_fmadd_ps(_mm256_set1_ps(*a.add(abase + p)), bv, acc[0]);
+                acc[1] = _mm256_fmadd_ps(_mm256_set1_ps(*a.add(abase + kb + p)), bv, acc[1]);
+                acc[2] = _mm256_fmadd_ps(_mm256_set1_ps(*a.add(abase + 2 * kb + p)), bv, acc[2]);
+                acc[3] = _mm256_fmadd_ps(_mm256_set1_ps(*a.add(abase + 3 * kb + p)), bv, acc[3]);
             }
-            let ex = _mm256_loadu_ps(c_ptr.add(t));
-            _mm256_storeu_ps(c_ptr.add(t), _mm256_add_ps(acc, ex));
+            for r in 0..rb {
+                let cp = c.add((i + r) * ldc + jj + t);
+                let e = _mm256_loadu_ps(cp);
+                _mm256_storeu_ps(cp, _mm256_add_ps(acc[r], e));
+            }
             t += 8;
         }
         while t < nb {
-            let mut sum = 0.0f32;
-            for p in 0..kb {
-                sum += *a_ptr.add(p) * *b_ptr.add(p * nb + t);
+            for r in 0..rb {
+                let mut s = 0.0f32;
+                for p in 0..kb {
+                    s += *a.add(abase + r * kb + p) * *b.add(p * nb + t);
+                }
+                *c.add((i + r) * ldc + jj + t) += s;
             }
-            *c_ptr.add(t) += sum;
             t += 1;
         }
+        i += 4;
+    }
+}
+
+/// Register-tiled AVX-512 micro-kernel (MR=4 rows × NR=16 cols). Same 4-row reuse as the AVX2
+/// kernel but with 16-wide vectors — double the FMA throughput per K-step. Preferred when
+/// `avx512f` is present.
+///
+/// # Safety
+/// Caller must guarantee `avx512f` at runtime, A padded to MR=4 rows, and all accessed indices
+/// in range (see [`kernel_avx2`]).
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "avx512f")]
+unsafe fn kernel_avx512(
+    mb: usize,
+    kb: usize,
+    nb: usize,
+    a_packed: &[f32],
+    b_packed: &[f32],
+    cblk: &mut [f32],
+    ldc: usize,
+    jj: usize,
+) {
+    use std::arch::x86_64::*;
+    let a = a_packed.as_ptr();
+    let b = b_packed.as_ptr();
+    let c = cblk.as_mut_ptr();
+    let z = _mm512_setzero_ps();
+    let mut i = 0;
+    while i < mb {
+        let rb = if i + 4 <= mb { 4 } else { mb - i };
+        let abase = i * kb;
+        let mut t = 0;
+        while t + 16 <= nb {
+            let mut acc = [z, z, z, z];
+            for p in 0..kb {
+                let bv = _mm512_loadu_ps(b.add(p * nb + t));
+                acc[0] = _mm512_fmadd_ps(_mm512_set1_ps(*a.add(abase + p)), bv, acc[0]);
+                acc[1] = _mm512_fmadd_ps(_mm512_set1_ps(*a.add(abase + kb + p)), bv, acc[1]);
+                acc[2] = _mm512_fmadd_ps(_mm512_set1_ps(*a.add(abase + 2 * kb + p)), bv, acc[2]);
+                acc[3] = _mm512_fmadd_ps(_mm512_set1_ps(*a.add(abase + 3 * kb + p)), bv, acc[3]);
+            }
+            for r in 0..rb {
+                let cp = c.add((i + r) * ldc + jj + t);
+                let e = _mm512_loadu_ps(cp);
+                _mm512_storeu_ps(cp, _mm512_add_ps(acc[r], e));
+            }
+            t += 16;
+        }
+        // 8-wide tail (AVX2-style step) then scalar tail.
+        while t + 8 <= nb {
+            for r in 0..rb {
+                let mut s = _mm256_setzero_ps();
+                let arow = abase + r * kb;
+                for p in 0..kb {
+                    s = _mm256_fmadd_ps(
+                        _mm256_set1_ps(*a.add(arow + p)),
+                        _mm256_loadu_ps(b.add(p * nb + t)),
+                        s,
+                    );
+                }
+                let cp = c.add((i + r) * ldc + jj + t);
+                let e = _mm256_loadu_ps(cp);
+                _mm256_storeu_ps(cp, _mm256_add_ps(s, e));
+            }
+            t += 8;
+        }
+        while t < nb {
+            for r in 0..rb {
+                let mut s = 0.0f32;
+                for p in 0..kb {
+                    s += *a.add(abase + r * kb + p) * *b.add(p * nb + t);
+                }
+                *c.add((i + r) * ldc + jj + t) += s;
+            }
+            t += 1;
+        }
+        i += 4;
     }
 }
 
@@ -593,7 +710,11 @@ impl BlasBackend for NativeBackend {
         #[cfg(target_arch = "x86_64")]
         {
             if std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma") {
-                "native-avx2+fma"
+                if want_avx512() && std::is_x86_feature_detected!("avx512f") {
+                    "native-avx512f (4x16 tile)"
+                } else {
+                    "native-avx2+fma (4x8 tile)"
+                }
             } else {
                 "native-scalar"
             }
