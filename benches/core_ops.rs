@@ -84,6 +84,45 @@ fn bench_linear_vs_flash_attention(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_int8_vs_fp32(c: &mut Criterion) {
+    // INT8 (VNNI) vs FP32 (AVX2) GEMM at the same shape — INT8 exploits dedicated CPU matrix
+    // hardware (~4× the MAC throughput/cycle, 4× less memory traffic).
+    use rust_nn::int8::{igemm, igemm_scalar};
+    let mut group = c.benchmark_group("int8_vs_fp32");
+    for size in [128, 256, 512].iter() {
+        let n = *size;
+        let a: Vec<f32> = (0..n * n).map(|i| (i as f32 * 0.001).sin() * 0.5).collect();
+        let b: Vec<f32> = (0..n * n).map(|i| (i as f32 * 0.001).cos() * 0.5).collect();
+        let mut cf = vec![0.0f32; n * n];
+        group.bench_function(format!("fp32_{n}"), |bencher| {
+            bencher.iter(|| {
+                blas::sgemm(
+                    blas::Transpose::NoTrans,
+                    blas::Transpose::NoTrans,
+                    n,
+                    n,
+                    n,
+                    1.0,
+                    &a,
+                    n,
+                    &b,
+                    n,
+                    0.0,
+                    &mut cf,
+                    n,
+                )
+            });
+        });
+        let a8: Vec<u8> = (0..n * n).map(|i| (i % 251) as u8).collect();
+        let b8: Vec<i8> = (0..n * n).map(|i| (i % 255) as i8).collect();
+        group.bench_function(format!("int8_vnni_{n}"), |bencher| {
+            bencher.iter(|| black_box(igemm(black_box(&a8), black_box(&b8), n, n, n)));
+        });
+        let _ = igemm_scalar;
+    }
+    group.finish();
+}
+
 fn bench_blas_sgemm(c: &mut Criterion) {
     // The BLAS engine: transpose-aware, B-panel cache-packed GEMM. The transposed-B variant is
     // the exact shape the matmul BACKWARD now uses (∂L/∂A = ∂L/∂C · Bᵀ).
@@ -228,6 +267,7 @@ criterion_group!(
     bench_matmul,
     bench_simd_matmul,
     bench_blas_sgemm,
+    bench_int8_vs_fp32,
     bench_linear_vs_flash_attention,
     bench_dropout,
     bench_fused_linear,

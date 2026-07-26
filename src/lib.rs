@@ -116,7 +116,7 @@ pub use grpo::{
     RewardScore, RewardWeights, StructureEdge, StructureEdgeType,
 };
 pub use gui::{full_dashboard, launch, tensor_heatmap_html, ModelDashboard, TrainingDashboard};
-pub use int8::{Int8Linear, Int8Weights};
+pub use int8::{igemm, igemm_scalar, Int8Linear, Int8Weights};
 pub use interactive::{run_repl, Session};
 pub use linear_attention::{KernelKind, LinearAttention as LinearAttentionLayer};
 pub use looped_transformer::{

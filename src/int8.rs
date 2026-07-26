@@ -172,6 +172,147 @@ impl Int8Linear {
     }
 }
 
+// ============================================================================
+// High-performance INT8 GEMM via AVX-512 VNNI (VPDPBUSD)
+// ============================================================================
+//
+// VPDPBUSD (the VNNI instruction) does a per-32-bit-lane dot product of 4
+// unsigned×signed bytes:  one ZMM instruction = 16 int32 lanes × 4 byte-MACs =
+// 64 INT8 multiply-accumulates per cycle — ~4× the per-cycle throughput of an
+// FP32 FMA, and 4× less memory traffic (bytes vs f32). This is exactly the
+// hardware feature CPUs add *for ML*, and it is the single biggest lever here.
+//
+// We compute C[m,n] = Σ_k a_u8[m,k] · b_i8[k,n]  (int32 accumulate; caller
+// applies zero-point / scale in the dequant step). B is repacked once into the
+// VNNI tile layout so the inner kernel is pure VNNI + a broadcast of 4 A bytes.
+
+use rayon::prelude::*;
+
+/// Repack `b` (`[k,n]` int8, row-major) into the VNNI tile layout: for each
+/// `(k4, n16)` tile, 64 bytes ordered as `lane l (0..16) × byte j (0..3)` where
+/// byte = `b[k4+j, n16+l]`. `k`/`n` are zero-padded up to `kp`/`np` (multiples
+/// of 4/16); out-of-range bytes are 0.
+fn pack_b_vnni(b: &[i8], k: usize, n: usize, kp: usize, np: usize) -> Vec<u8> {
+    let n_blocks = np / 16;
+    let mut out = vec![0u8; (kp / 4) * n_blocks * 64];
+    for kb in 0..(kp / 4) {
+        let k4 = kb * 4;
+        for nb in 0..n_blocks {
+            let n16 = nb * 16;
+            let base = (kb * n_blocks + nb) * 64;
+            for l in 0..16usize {
+                let col = n16 + l;
+                for j in 0..4usize {
+                    let row = k4 + j;
+                    let v = if row < k && col < n {
+                        b[row * n + col] as u8 // i8 → u8 bit pattern
+                    } else {
+                        0
+                    };
+                    out[base + l * 4 + j] = v;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Scalar INT8 GEMM reference: `c[m,n] = Σ_k a_u8[m,k] · b_i8[k,n]` (i32).
+/// `a` bytes are treated as unsigned (0..255), `b` bytes sign-extended.
+pub fn igemm_scalar(a: &[u8], b: &[i8], m: usize, k: usize, n: usize) -> Vec<i32> {
+    let mut c = vec![0i32; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            let mut s = 0i32;
+            for p in 0..k {
+                s += a[i * k + p] as i32 * b[p * n + j] as i32;
+            }
+            c[i * n + j] = s;
+        }
+    }
+    c
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "avx512f,avx512vnni")]
+unsafe fn igemm_vnni_block(
+    a_pad: &[u8],
+    b_pack: &[u8],
+    crows: &mut [i32], // rb × np row-major
+    i0: usize,
+    rb: usize,
+    kp: usize,
+    np: usize,
+) {
+    use std::arch::x86_64::*;
+    let n_blocks = np / 16;
+    let z = _mm512_setzero_si512();
+    let a_ptr = a_pad.as_ptr();
+    let b_ptr = b_pack.as_ptr();
+    // MR=4 register tile: each B-load is reused across 4 A-rows via 4 accumulators.
+    for nb in 0..n_blocks {
+        let n16 = nb * 16;
+        let mut acc = [z, z, z, z];
+        for kb in 0..(kp / 4) {
+            let k4 = kb * 4;
+            let tile_off = (kb * n_blocks + nb) * 64;
+            let bvec = _mm512_loadu_epi32(b_ptr.add(tile_off) as *const i32);
+            for r in 0..4 {
+                // 4 A bytes a[i0+r, k4..k4+4] as a little-endian u32, broadcast to all lanes.
+                let au32 = (a_ptr.add((i0 + r) * kp + k4) as *const u32).read_unaligned() as i32;
+                let avec = _mm512_set1_epi32(au32);
+                acc[r] = _mm512_dpbusd_epi32(acc[r], avec, bvec);
+            }
+        }
+        // Store only the rb real rows.
+        for r in 0..rb {
+            let mut tmp = [0i32; 16];
+            _mm512_storeu_epi32(tmp.as_mut_ptr(), acc[r]);
+            let cw = r * np + n16;
+            crows[cw..cw + 16].copy_from_slice(&tmp);
+        }
+    }
+}
+
+/// INT8 GEMM: `c[m,n] = Σ_k a_u8[m,k] · b_i8[k,n]` (i32 accumulate).
+///
+/// `a` is `[m,k]` **unsigned** bytes (0..255), `b` is `[k,n]` **signed** bytes — the
+/// VNNI (unsigned × signed) contract. On AVX-512 VNNI hardware this runs the VPDPBUSD
+/// micro-kernel (~4× FP32 FMA throughput, 4× less memory); otherwise it falls back to
+/// the scalar reference. Caller applies activation zero-point / per-channel scales to
+/// dequantize the int32 result.
+pub fn igemm(a: &[u8], b: &[i8], m: usize, k: usize, n: usize) -> Vec<i32> {
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("avx512vnni") {
+        let kp = (k + 3) & !3;
+        let np = (n + 15) & !15;
+        let mp = (m + 3) & !3;
+        // Pad A to mp × kp (zero fill); repack B into the VNNI layout.
+        let mut a_pad = vec![0u8; mp * kp];
+        for i in 0..m {
+            a_pad[i * kp..i * kp + k].copy_from_slice(&a[i * k..i * k + k]);
+        }
+        let b_pack = pack_b_vnni(b, k, n, kp, np);
+        let mut ctmp = vec![0i32; m * np];
+        // Parallelise over groups of 4 M-rows (each task owns its output rows).
+        ctmp.par_chunks_mut(np * 4)
+            .enumerate()
+            .for_each(|(blk, rows)| {
+                let i0 = blk * 4;
+                let rb = rows.len() / np;
+                unsafe { igemm_vnni_block(&a_pad, &b_pack, rows, i0, rb, kp, np) };
+            });
+        // Trim the np-padded columns down to n.
+        let mut c = vec![0i32; m * n];
+        for i in 0..m {
+            c[i * n..i * n + n].copy_from_slice(&ctmp[i * np..i * np + n]);
+        }
+        return c;
+    }
+    igemm_scalar(a, b, m, k, n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +375,60 @@ mod tests {
         assert_eq!(q.shape, vec![16, 32]);
         assert_eq!(q.data.len(), 16 * 32);
         assert_eq!(q.scales.len(), 16);
+    }
+
+    // ---------- VNNI INT8 GEMM ----------
+
+    fn lcg_bytes(seed: &mut u32, n: usize, signed: bool) -> Vec<i8> {
+        (0..n)
+            .map(|_| {
+                *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let b = (*seed >> 16) as u8;
+                if signed {
+                    b as i8
+                } else {
+                    (b & 0x7f) as i8
+                }
+            })
+            .collect()
+    }
+
+    fn check_igemm(m: usize, k: usize, n: usize) {
+        let mut s = 1u32;
+        let a_i8 = lcg_bytes(&mut s, m * k, false);
+        let b_i8 = lcg_bytes(&mut s, k * n, true);
+        let a_u8: Vec<u8> = a_i8.iter().map(|&v| v as u8).collect();
+        let expected = igemm_scalar(&a_u8, &b_i8, m, k, n);
+        let got = igemm(&a_u8, &b_i8, m, k, n);
+        assert_eq!(got.len(), expected.len(), "len mismatch ({m},{k},{n})");
+        let mut worst = 0i64;
+        for (g, e) in got.iter().zip(expected.iter()) {
+            let d = (*g - *e).abs() as i64;
+            worst = worst.max(d);
+        }
+        assert!(
+            worst == 0,
+            "igemm mismatch ({m},{k},{n}): worst abs diff {worst}"
+        );
+    }
+
+    #[test]
+    fn igemm_known_small() {
+        let a: Vec<u8> = vec![1, 2, 3, 4];
+        let b: Vec<i8> = vec![1, -1, 2, 2, -3, 4, 0, -2]; // [4,2]
+        let c = igemm(&a, &b, 1, 4, 2);
+        // c[0] = 1*1+2*2+3*(-3)+4*0 = -4 ; c[1] = 1*(-1)+2*2+3*4+4*(-2) = 7
+        assert_eq!(c, vec![-4, 7]);
+    }
+
+    #[test]
+    fn igemm_matches_scalar_various() {
+        check_igemm(16, 32, 48); // multiples of 4/16
+        check_igemm(3, 5, 7); // non-multiples → K(×4) and N(×16) padding
+        check_igemm(13, 17, 29);
+        check_igemm(1, 1, 1);
+        check_igemm(4, 4, 16);
+        check_igemm(33, 9, 33);
+        check_igemm(64, 64, 64); // bigger — blocked/parallel path
     }
 }

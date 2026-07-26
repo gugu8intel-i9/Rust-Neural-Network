@@ -519,6 +519,27 @@ cargo test
 
 ## Changelog
 
+### 1.5.0 — Exploit the CPU's ML hardware: AVX-512 VNNI INT8 GEMM
+
+The biggest thing modern CPUs add *specifically for ML* is **dedicated low-precision matrix
+hardware**. This release taps it.
+
+- **INT8 GEMM via AVX-512 VNNI (`int8::igemm`)**. `VPDPBUSD` does a per-lane dot product of 4
+  unsigned×signed bytes — one ZMM instruction = **64 INT8 multiply-accumulates** (~4× the
+  per-cycle throughput of an FP32 FMA) and **4× less memory traffic** (bytes vs f32). The kernel
+  is an **MR=4 register tile** (each B-load reused across 4 A-rows) over a VNNI-repacked B, with
+  K/N zero-padding for arbitrary shapes and a scalar fallback.
+  - Replaces what was a fully-scalar triple-loop INT8 matmul.
+  - Measured vs the FP32 `sgemm` (AVX2 4×8) at the same shape: **~2× faster** (512³: 1.96 ms INT8
+    vs 3.91 ms FP32) plus 4× the memory density. (The theoretical 4× per-cycle edge is halved by
+    AVX-512 frequency downclock on this CPU — an honest ~2× net.)
+- **CPU strengths/weaknesses for ML, taken seriously**: CPUs are *good* at dense SIMD GEMM and
+  dedicated INT8/low-precision matrix units (now both exploited), and *bad* at memory-bandwidth-
+  bound low-intensity ops and conversions — INT8 attacks the bandwidth side too (4× smaller
+  operands). FP32 GEMM was already ~86 GFLOP/s (≈79% of AVX2 peak) from 1.4.0.
+- 3 new INT8 GEMM correctness tests (known-answer + vs scalar across 7 shapes incl. non-multiples
+  of 4/16). 338 tests pass overall, 0 clippy warnings, `cargo fmt` clean.
+
 ### 1.4.0 — Production BLAS: register-tiled AVX2/AVX-512 micro-kernels
 
 - **Register-tiled GEMM micro-kernels** (the core of a production BLAS): the inner kernel is now a
