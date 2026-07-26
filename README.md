@@ -519,6 +519,26 @@ cargo test
 
 ## Changelog
 
+### 1.4.0 — Production BLAS: register-tiled AVX2/AVX-512 micro-kernels
+
+- **Register-tiled GEMM micro-kernels** (the core of a production BLAS): the inner kernel is now a
+  **4-row tile** (BLIS/Goto-style) instead of a single row — each loaded B vector is reused across
+  **4** FMA accumulators, a 4× arithmetic-intensity lift.
+  - **AVX2 + FMA `4×8` kernel** — the default. Measured **~86 GFLOP/s on a 512³ f32 GEMM** (3.1 ms),
+    ~2.3× faster than the AVX-512 path *on this CPU* and faster than the previous 1-row kernel.
+  - **AVX-512 `4×16` kernel** — included and reachable via `RUSTNN_USE_AVX512=1`. Made opt-in because
+    AVX-512 triggers heavy frequency-licensing downclocks on many client CPUs (measured 2.3× *slower*
+    than AVX2 here); on server parts without that penalty it can win for huge matmuls.
+  - The packed-A buffer is zero-padded to a multiple of 4 rows so the tile is always safe.
+- **Honest positioning vs MKL/OpenBLAS**: this is a pure-Rust, dependency-free, **autograd-native**
+  BLAS (fused forward/backward, transpose-aware, no operand copies). For *isolated peak large-GEMM
+  FLOPS* MKL/OpenBLAS (decades of per-CPU assembly) still lead. Where this wins is the *integrated
+  training step* — fused ops, no transposed copies, no C dependency/portability headaches — and on
+  the small/medium matmuls that dominate small-model training. No fabricated benchmark.
+- Verified: all 14 sgemm correctness tests pass on **both** the AVX2 and AVX-512 paths; 335 tests
+  pass overall, 0 clippy warnings, `cargo fmt` clean. Linear-attention seq-1024 dropped to 3.83 ms
+  (from 4.92 ms with the old 1-row kernel).
+
 ### 1.3.0 — Small-model training overhaul: fused layers, faster `sgemm`, linear attention in `Transformer`
 
 - **Fused affine layer** (`Op::Linear` / `Tensor::linear_layer`): collapses `nn::Linear`'s old
