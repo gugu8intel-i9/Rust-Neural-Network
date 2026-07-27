@@ -291,6 +291,13 @@ impl Tensor {
         self.0.read().unwrap().data.clone()
     }
 
+    /// Flat row-major `Vec<f32>` of the data, read under a single lock with **no intermediate
+    /// `ArrayD` clone** (unlike `data().iter().collect()`, which would clone the whole array first).
+    /// Used on the matmul/linear hot paths to cut per-op allocation on larger layers.
+    pub fn flat_data(&self) -> Vec<f32> {
+        self.0.read().unwrap().data.iter().copied().collect()
+    }
+
     pub fn grad(&self) -> Option<ArrayD<f32>> {
         self.0.read().unwrap().grad.clone()
     }
@@ -724,11 +731,8 @@ impl Tensor {
     /// allocated a transposed copy and three graph nodes. Fully differentiable; backward computes
     /// `dx`, `dW`, `db` (and the ReLU mask) in one pass via two `sgemm` calls.
     pub fn linear_layer(x: &Tensor, w: &Tensor, b: &Tensor, act: FusedAct) -> Tensor {
-        let xd = x.data();
-        let wd = w.data();
-        let bd = b.data();
-        let xs = xd.shape();
-        let ws = wd.shape();
+        let xs = x.shape();
+        let ws = w.shape();
         assert!(
             xs.len() == 2 && ws.len() == 2 && xs[1] == ws[1],
             "linear_layer expects x [batch, in] and w [out, in] (shared in), got {:?} / {:?}",
@@ -739,9 +743,9 @@ impl Tensor {
         let out_f = ws[0];
         let relu = act == FusedAct::Relu;
 
-        let x_flat: Vec<f32> = xd.iter().copied().collect();
-        let w_flat: Vec<f32> = wd.iter().copied().collect();
-        let b_flat: Vec<f32> = bd.iter().copied().collect();
+        let x_flat = x.flat_data();
+        let w_flat = w.flat_data();
+        let b_flat = b.flat_data();
         let mut y = vec![0.0f32; batch * out_f];
         // y = x · Wᵀ   (W stored [out, in], so transb = Trans, ldb = in)
         crate::blas::sgemm(
@@ -1576,15 +1580,13 @@ impl Tensor {
                     //   dW = dactᵀ · x           (Trans: [out,batch]·[batch,in])
                     //   db = Σ_batch dact        (column sum → [out])
                     let act = FusedAct::from_u8(*act_u8);
-                    let xd = x.0.read().unwrap().data.clone();
-                    let wd = w.0.read().unwrap().data.clone();
-                    let bd = b.0.read().unwrap().data.clone();
-                    let xs = xd.shape();
-                    let ws = wd.shape();
+                    let xs = x.shape();
+                    let ws = w.shape();
                     let (batch, in_f) = (xs[0], xs[1]);
                     let out_f = ws[0];
-                    let x_flat: Vec<f32> = xd.iter().copied().collect();
-                    let w_flat: Vec<f32> = wd.iter().copied().collect();
+                    let x_flat = x.flat_data();
+                    let w_flat = w.flat_data();
+                    let b_flat = b.flat_data();
 
                     let g_flat: Vec<f32> = grad.iter().copied().collect(); // grad is [batch, out]
                     let dact: Vec<f32> = if act == FusedAct::Relu {
@@ -1609,7 +1611,7 @@ impl Tensor {
                         for i in 0..batch {
                             let row = i * out_f;
                             for o in 0..out_f {
-                                d[row + o] = if z[row + o] + bd[o] > 0.0 {
+                                d[row + o] = if z[row + o] + b_flat[o] > 0.0 {
                                     g_flat[row + o]
                                 } else {
                                     0.0
