@@ -412,9 +412,10 @@ fn kernel_scalar(
     }
 }
 
-/// Register-tiled AVX2 + FMA micro-kernel (MR=4 rows × NR=8 cols). Each K-step loads one 8-wide
-/// vector of B and reuses it across **4** rows of A via 4 FMA accumulators — a 4× arithmetic-
-/// intensity improvement over a 1-row kernel. This is the BLIS/Goto register-tiling technique.
+/// Register-tiled AVX2 + FMA micro-kernel (MR=4 rows × NR=16 cols). Each K-step loads **two**
+/// 8-wide B vectors and reuses them across **4** A-rows via **8** FMA accumulators — and each
+/// A-broadcast is amortised over 16 output columns (vs 8 in a 4×8 tile), so A traffic halves.
+/// This is the BLIS/Goto register-tiling technique, sized to use ~11 of the 16 YMM registers.
 ///
 /// Requires the packed A buffer to be zero-padded to a multiple of 4 rows (see `kernel_dispatch`).
 ///
@@ -443,7 +444,37 @@ unsafe fn kernel_avx2(
     while i < mb {
         let rb = if i + 4 <= mb { 4 } else { mb - i };
         let abase = i * kb;
+        // ---- 16-column tiles: 8 accumulators (4 rows × 2 B-halves) ----
         let mut t = 0;
+        while t + 16 <= nb {
+            let mut acc = [z, z, z, z, z, z, z, z];
+            for p in 0..kb {
+                let bv0 = _mm256_loadu_ps(b.add(p * nb + t));
+                let bv1 = _mm256_loadu_ps(b.add(p * nb + t + 8));
+                let a0 = _mm256_set1_ps(*a.add(abase + p));
+                let a1 = _mm256_set1_ps(*a.add(abase + kb + p));
+                let a2 = _mm256_set1_ps(*a.add(abase + 2 * kb + p));
+                let a3 = _mm256_set1_ps(*a.add(abase + 3 * kb + p));
+                acc[0] = _mm256_fmadd_ps(a0, bv0, acc[0]);
+                acc[1] = _mm256_fmadd_ps(a0, bv1, acc[1]);
+                acc[2] = _mm256_fmadd_ps(a1, bv0, acc[2]);
+                acc[3] = _mm256_fmadd_ps(a1, bv1, acc[3]);
+                acc[4] = _mm256_fmadd_ps(a2, bv0, acc[4]);
+                acc[5] = _mm256_fmadd_ps(a2, bv1, acc[5]);
+                acc[6] = _mm256_fmadd_ps(a3, bv0, acc[6]);
+                acc[7] = _mm256_fmadd_ps(a3, bv1, acc[7]);
+            }
+            for r in 0..rb {
+                let cp0 = c.add((i + r) * ldc + jj + t);
+                let e0 = _mm256_loadu_ps(cp0);
+                _mm256_storeu_ps(cp0, _mm256_add_ps(acc[r * 2], e0));
+                let cp1 = c.add((i + r) * ldc + jj + t + 8);
+                let e1 = _mm256_loadu_ps(cp1);
+                _mm256_storeu_ps(cp1, _mm256_add_ps(acc[r * 2 + 1], e1));
+            }
+            t += 16;
+        }
+        // ---- 8-column tail (4×8 step) ----
         while t + 8 <= nb {
             let mut acc = [z, z, z, z];
             for p in 0..kb {
@@ -460,6 +491,7 @@ unsafe fn kernel_avx2(
             }
             t += 8;
         }
+        // ---- scalar tail ----
         while t < nb {
             for r in 0..rb {
                 let mut s = 0.0f32;
@@ -713,7 +745,7 @@ impl BlasBackend for NativeBackend {
                 if want_avx512() && std::is_x86_feature_detected!("avx512f") {
                     "native-avx512f (4x16 tile)"
                 } else {
-                    "native-avx2+fma (4x8 tile)"
+                    "native-avx2+fma (4x16 tile)"
                 }
             } else {
                 "native-scalar"
