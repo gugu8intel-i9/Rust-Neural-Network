@@ -52,8 +52,9 @@ const KC: usize = 256;
 /// M-block: rows of A (and C) processed per L2 residence of a B-panel.
 const MC: usize = 128;
 
-/// N-block: columns of B (and C) per packed B-panel.
-const NC: usize = 512;
+/// N-block: columns of B (and C) per packed B-panel. Sized so the `[KC, NC]` B-panel fits the
+/// per-core L2 (so it stays resident while every M-block of A streams past it).
+const NC: usize = 256;
 
 /// Below this flop count we skip blocking + threading entirely (overhead dominates).
 const SMALL_FLOPS: usize = 4096;
