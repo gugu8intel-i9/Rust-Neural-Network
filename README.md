@@ -519,6 +519,22 @@ cargo test
 
 ## Changelog
 
+### 1.9.0 — GEMM cache-block re-tuning (Goto/BLIS) + an honest prefetch experiment
+
+- **Re-tuned the N-block (`NC` 512 → 256)** so the packed `[KC, NC]` B-panel stays **resident in
+  L2** while every M-block of A streams past it — the central cache-blocking idea from Goto's
+  algorithm / BLIS. Measured **512³ f32 GEMM: ~2.74 ms → ~2.14 ms (~126 GFLOP/s, a ~29% jump)**.
+- **Software prefetching** (another classic Goto/BLIS latency-hiding trick) was implemented in the
+  micro-kernel, **benchmarked, and reverted** — it was *slower* here (3.0 ms vs 2.1 ms) because the
+  hardware prefetcher already covers the L2→L1 stream. Kept the experiment out of the tree rather
+  than cargo-cult it.
+- **Honest training impact vs eager PyTorch (CPU, single-thread):** the faster GEMM helps the
+  matmul-bound portion, but at **medium** the two are within run-to-run noise (~tied) and at
+  **large** (512-wide) PyTorch+MKL wins clearly — because for non-tiny models the per-step cost is
+  a mix of matmul (where MKL still leads a from-scratch kernel) and per-op overhead. The clean
+  wins remain tiny/small (~24× / ~2.3× faster than PyTorch). No fabricated numbers.
+- 338 tests pass, 0 clippy warnings, `cargo fmt` clean.
+
 ### 1.8.0 — Wider GEMM tile: optimize for larger models
 
 - **4×16 AVX2 micro-kernel** (was 4×8). Each K-step now loads two 8-wide B vectors and reuses
