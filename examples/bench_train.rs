@@ -44,4 +44,5 @@ fn main() {
     bench(16, 32, 4, 8, 2000, "rust_tiny");
     bench(64, 128, 10, 32, 1000, "rust_small");
     bench(128, 256, 10, 32, 500, "rust_medium");
+    bench(256, 512, 256, 64, 200, "rust_large");
 }

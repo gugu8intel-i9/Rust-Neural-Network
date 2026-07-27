@@ -519,6 +519,29 @@ cargo test
 
 ## Changelog
 
+### 1.8.0 — Wider GEMM tile: optimize for larger models
+
+- **4×16 AVX2 micro-kernel** (was 4×8). Each K-step now loads two 8-wide B vectors and reuses
+  them across 4 A-rows via **8** FMA accumulators, and each A-broadcast is amortised over **16**
+  output columns instead of 8 (A traffic halves). This is the standard high-performance BLIS tile,
+  using ~11 of the 16 YMM registers.
+- **GEMM throughput: ~86 → ~98 GFLOP/s on a 512³ f32 GEMM (2.74 ms) ≈ 90% of AVX2 peak**, which
+  directly speeds up the larger/compute-bound models where matmul dominates.
+- **Effect on the PyTorch head-to-head (CPU, single-thread, same MLP/Adam/MSE):** the crossover
+  where PyTorch+MKL takes over moved *up* a size class.
+
+  | model | rust-nn | PyTorch | result |
+  |---|---|---|---|
+  | tiny 16→32→32→4 | 0.032 ms | 0.77 ms | **~24× faster** |
+  | small 64→128→128→10 | 0.35 ms | 0.82 ms | **~2.3× faster** |
+  | medium 128→256→256→10 | ~1.0–1.2 ms | ~1.2–1.4 ms | **competitive → often faster** |
+  | large 256→512→512→256, b64 | ~6.5 ms | ~4.1 ms | PyTorch wins (MKL matmul) |
+
+  Honest line: rust-nn now beats eager PyTorch up through ~256-wide models and ties/edges it at
+  medium; at 512-wide+ the matmul becomes compute-bound and PyTorch+MKL wins (MKL is faster than a
+  from-scratch GEMM). Reproducible via `examples/bench_train.rs` + `examples/bench_torch.py`.
+- 338 tests pass, 0 clippy warnings, `cargo fmt` clean.
+
 ### 1.7.0 — Faster training: fused AVX2 Adam + zero-copy operand reads
 
 Cut per-step overhead on the training hot path, narrowing and (for small models) eliminating the
