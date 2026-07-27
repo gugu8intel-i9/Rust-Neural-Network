@@ -298,6 +298,20 @@ impl Tensor {
         self.0.read().unwrap().data.iter().copied().collect()
     }
 
+    /// Hand the contiguous data to `f` as a `&[f32]` **with zero copy** when the array is
+    /// contiguous (the common case for parameters and freshly-computed results); otherwise fall
+    /// back to a flat `Vec`. Avoids both the `ArrayD` clone and the re-collect of `flat_data`.
+    pub fn with_data_slice<R>(&self, f: impl FnOnce(&[f32]) -> R) -> R {
+        let g = self.0.read().unwrap();
+        match g.data.as_slice_memory_order() {
+            Some(s) => f(s),
+            None => {
+                let v: Vec<f32> = g.data.iter().copied().collect();
+                f(&v)
+            }
+        }
+    }
+
     pub fn grad(&self) -> Option<ArrayD<f32>> {
         self.0.read().unwrap().grad.clone()
     }
@@ -743,48 +757,51 @@ impl Tensor {
         let out_f = ws[0];
         let relu = act == FusedAct::Relu;
 
-        let x_flat = x.flat_data();
-        let w_flat = w.flat_data();
-        let b_flat = b.flat_data();
-        let mut y = vec![0.0f32; batch * out_f];
-        // y = x · Wᵀ   (W stored [out, in], so transb = Trans, ldb = in)
-        crate::blas::sgemm(
-            crate::blas::Transpose::NoTrans,
-            crate::blas::Transpose::Trans,
-            batch,
-            out_f,
-            in_f,
-            1.0,
-            &x_flat,
-            in_f,
-            &w_flat,
-            in_f,
-            0.0,
-            &mut y,
-            out_f,
-        );
-        // fused bias add + optional ReLU
-        if relu {
-            for i in 0..batch {
-                let row = i * out_f;
-                for o in 0..out_f {
-                    let v = y[row + o] + b_flat[o];
-                    y[row + o] = if v > 0.0 { v } else { 0.0 };
-                }
-            }
-        } else {
-            for i in 0..batch {
-                let row = i * out_f;
-                for o in 0..out_f {
-                    y[row + o] += b_flat[o];
-                }
-            }
-        }
+        let requires_grad = x.requires_grad() || w.requires_grad() || b.requires_grad();
+        // Zero-copy operand reads (contiguous → slice, no ArrayD clone, no re-collect).
+        let y = x.with_data_slice(|xsl| {
+            w.with_data_slice(|wsl| {
+                b.with_data_slice(|bsl| {
+                    let mut y = vec![0.0f32; batch * out_f];
+                    // y = x · Wᵀ   (W stored [out, in], so transb = Trans, ldb = in)
+                    crate::blas::sgemm(
+                        crate::blas::Transpose::NoTrans,
+                        crate::blas::Transpose::Trans,
+                        batch,
+                        out_f,
+                        in_f,
+                        1.0,
+                        xsl,
+                        in_f,
+                        wsl,
+                        in_f,
+                        0.0,
+                        &mut y,
+                        out_f,
+                    );
+                    // fused bias add + optional ReLU
+                    if relu {
+                        for i in 0..batch {
+                            let row = i * out_f;
+                            for o in 0..out_f {
+                                let v = y[row + o] + bsl[o];
+                                y[row + o] = if v > 0.0 { v } else { 0.0 };
+                            }
+                        }
+                    } else {
+                        for i in 0..batch {
+                            let row = i * out_f;
+                            for o in 0..out_f {
+                                y[row + o] += bsl[o];
+                            }
+                        }
+                    }
+                    y
+                })
+            })
+        });
 
         let res_data = ArrayD::from_shape_vec(IxDyn(&[batch, out_f]), y).unwrap();
-        let requires_grad = x.0.read().unwrap().requires_grad
-            || w.0.read().unwrap().requires_grad
-            || b.0.read().unwrap().requires_grad;
         let res = Tensor::new(res_data, requires_grad);
         if requires_grad {
             res.0.write().unwrap().creator = Some(Arc::new(Op::Linear(
@@ -1584,11 +1601,14 @@ impl Tensor {
                     let ws = w.shape();
                     let (batch, in_f) = (xs[0], xs[1]);
                     let out_f = ws[0];
-                    let x_flat = x.flat_data();
-                    let w_flat = w.flat_data();
-                    let b_flat = b.flat_data();
+                    let gx = x.0.read().unwrap();
+                    let gw = w.0.read().unwrap();
+                    let gb = b.0.read().unwrap();
+                    let x_flat: &[f32] = gx.data.as_slice_memory_order().expect("x contiguous");
+                    let w_flat: &[f32] = gw.data.as_slice_memory_order().expect("w contiguous");
+                    let b_flat: &[f32] = gb.data.as_slice_memory_order().expect("b contiguous");
+                    let g_flat: &[f32] = grad.as_slice_memory_order().expect("grad contiguous");
 
-                    let g_flat: Vec<f32> = grad.iter().copied().collect(); // grad is [batch, out]
                     let dact: Vec<f32> = if act == FusedAct::Relu {
                         // recompute z = x·Wᵀ + b to build the ReLU mask
                         let mut z = vec![0.0f32; batch * out_f];
@@ -1599,9 +1619,9 @@ impl Tensor {
                             out_f,
                             in_f,
                             1.0,
-                            &x_flat,
+                            x_flat,
                             in_f,
-                            &w_flat,
+                            w_flat,
                             in_f,
                             0.0,
                             &mut z,
@@ -1620,7 +1640,7 @@ impl Tensor {
                         }
                         d
                     } else {
-                        g_flat
+                        g_flat.to_vec()
                     };
 
                     if x.requires_grad() {
@@ -1635,7 +1655,7 @@ impl Tensor {
                             1.0,
                             &dact,
                             out_f,
-                            &w_flat,
+                            w_flat,
                             in_f,
                             0.0,
                             &mut dx,
@@ -1659,7 +1679,7 @@ impl Tensor {
                             1.0,
                             &dact,
                             out_f,
-                            &x_flat,
+                            x_flat,
                             in_f,
                             0.0,
                             &mut dw,

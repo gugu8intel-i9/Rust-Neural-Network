@@ -519,6 +519,31 @@ cargo test
 
 ## Changelog
 
+### 1.7.0 — Faster training: fused AVX2 Adam + zero-copy operand reads
+
+Cut per-step overhead on the training hot path, narrowing and (for small models) eliminating the
+gap to PyTorch on CPU.
+
+- **AVX2 fused `Adam` kernel**. The old `Adam::step` allocated ~9 full-parameter-sized temporary
+  arrays per step (`&grad*(1-b1)`, `&m*b1 + …`, `grad*grad`, `mapv(sqrt)`, `update*lr_t`, …) and
+  ran `sqrt`/`div` scalarly. The new `adam_update_avx2` does the whole update **in one pass, zero
+  temporaries, 8-wide vectorised** (`fmadd`/`sqrt`/`div`), with a scalar fallback.
+- **Zero-copy operand reads** via `Tensor::with_data_slice` on the `linear_layer` forward and
+  `Op::Linear` backward: contiguous operands are handed to `sgemm` as a borrowed `&[f32]` — no
+  `ArrayD` clone, no re-collect. The backward no longer re-copies each 65K-element weight.
+- **Measured per-step vs eager PyTorch (CPU, single-thread, same MLP / Adam / MSE):**
+
+  | model | before 1.7 | after 1.7 | PyTorch | result |
+  |---|---|---|---|---|
+  | tiny 16→32→32→4 | 0.046 ms | **0.032 ms** | 0.770 ms | **~24× faster** |
+  | small 64→128→128→10 | 0.420 ms | **0.35 ms** | 0.815 ms | **~2.3× faster** |
+  | medium 128→256→256→10 | 1.79 ms | **~1.2–1.4 ms** | ~1.1–1.3 ms | **competitive (within noise)** |
+
+  (Medium sits right at the crossover: it is overhead-bound for us and matmul-bound for PyTorch+MKL,
+  so the two are within run-to-run noise here. Larger models still favour PyTorch/MKL.) No fabricated
+  numbers — reproducible via `examples/bench_train.rs` + `examples/bench_torch.py`.
+- 338 tests pass, 0 clippy warnings, `cargo fmt` clean.
+
 ### 1.6.0 — Honest PyTorch head-to-head + lower per-op overhead
 
 - **Measured vs eager-mode PyTorch (CPU, single-thread, same MLP / Adam / MSE).** This engine is

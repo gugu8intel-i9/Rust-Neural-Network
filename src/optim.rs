@@ -86,21 +86,128 @@ impl Adam {
     }
 }
 
+/// Scalar fused Adam update (one pass, no temporaries).
+#[allow(clippy::too_many_arguments)]
+fn adam_update_scalar(
+    g: &[f32],
+    m: &mut [f32],
+    v: &mut [f32],
+    d: &mut [f32],
+    b1: f32,
+    b2: f32,
+    one_b1: f32,
+    one_b2: f32,
+    eps: f32,
+    lr_t: f32,
+) {
+    for k in 0..g.len() {
+        let gk = g[k];
+        let mk = m[k] * b1 + gk * one_b1;
+        let vk = v[k] * b2 + gk * gk * one_b2;
+        m[k] = mk;
+        v[k] = vk;
+        d[k] -= lr_t * mk / (vk.sqrt() + eps);
+    }
+}
+
+/// AVX2 + FMA fused Adam update: 8 elements/iteration with vectorised mul/fmadd/sqrt/div.
+/// Far faster than a scalar loop for large parameters (where `sqrt`/`div` dominate).
+///
+/// # Safety
+/// Caller must ensure `avx2`+`fma` are available and `g`,`m`,`v`,`d` have equal length.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn adam_update_avx2(
+    g: &[f32],
+    m: &mut [f32],
+    v: &mut [f32],
+    d: &mut [f32],
+    b1: f32,
+    b2: f32,
+    one_b1: f32,
+    one_b2: f32,
+    eps: f32,
+    lr_t: f32,
+) {
+    use std::arch::x86_64::*;
+    let vb1 = _mm256_set1_ps(b1);
+    let vb2 = _mm256_set1_ps(b2);
+    let vob1 = _mm256_set1_ps(one_b1);
+    let vob2 = _mm256_set1_ps(one_b2);
+    let veps = _mm256_set1_ps(eps);
+    let vlr = _mm256_set1_ps(lr_t);
+    let mut k = 0;
+    while k + 8 <= g.len() {
+        let gg = _mm256_loadu_ps(g.as_ptr().add(k));
+        let mm = _mm256_loadu_ps(m.as_ptr().add(k));
+        let vv = _mm256_loadu_ps(v.as_ptr().add(k));
+        let m_new = _mm256_fmadd_ps(mm, vb1, _mm256_mul_ps(gg, vob1));
+        let gsq = _mm256_mul_ps(gg, gg);
+        let v_new = _mm256_fmadd_ps(vv, vb2, _mm256_mul_ps(gsq, vob2));
+        let denom = _mm256_add_ps(_mm256_sqrt_ps(v_new), veps);
+        let upd = _mm256_div_ps(m_new, denom);
+        let dd = _mm256_loadu_ps(d.as_ptr().add(k));
+        _mm256_storeu_ps(m.as_mut_ptr().add(k), m_new);
+        _mm256_storeu_ps(v.as_mut_ptr().add(k), v_new);
+        _mm256_storeu_ps(
+            d.as_mut_ptr().add(k),
+            _mm256_sub_ps(dd, _mm256_mul_ps(upd, vlr)),
+        );
+        k += 8;
+    }
+    while k < g.len() {
+        let gk = g[k];
+        let mk = m[k] * b1 + gk * one_b1;
+        let vk = v[k] * b2 + gk * gk * one_b2;
+        m[k] = mk;
+        v[k] = vk;
+        d[k] -= lr_t * mk / (vk.sqrt() + eps);
+        k += 1;
+    }
+}
+
 impl Optimizer for Adam {
     fn step(&mut self) {
         self.t += 1;
-        let lr_t = self.lr * (1.0 - self.beta2.powi(self.t as i32)).sqrt()
-            / (1.0 - self.beta1.powi(self.t as i32));
+        let bc1 = 1.0 - self.beta1.powi(self.t as i32);
+        let bc2 = 1.0 - self.beta2.powi(self.t as i32);
+        let lr_t = self.lr * bc2.sqrt() / bc1;
+        let (b1, b2, eps, one_b1, one_b2) = (
+            self.beta1,
+            self.beta2,
+            self.eps,
+            1.0 - self.beta1,
+            1.0 - self.beta2,
+        );
 
         for (i, param) in self.params.iter_mut().enumerate() {
             let mut inner = param.0.write().unwrap();
-            if let Some(grad) = inner.grad.take() {
-                self.m[i] = &self.m[i] * self.beta1 + &grad * (1.0 - self.beta1);
-                self.v[i] = &self.v[i] * self.beta2 + (&grad * &grad) * (1.0 - self.beta2);
-
-                let update = &self.m[i] / (self.v[i].mapv(|x| x.sqrt()) + self.eps);
-                inner.data -= &(update * lr_t);
+            let Some(grad) = inner.grad.take() else {
+                continue;
+            };
+            // In-place fused update — one pass, zero temporary arrays, vectorised on AVX2.
+            // (The previous version allocated ~9 full-parameter-sized temporaries per step and
+            // ran the sqrt/div scalarly, dominating step time for non-tiny layers.)
+            let g = grad.as_slice_memory_order().expect("grad is contiguous");
+            let m = self.m[i]
+                .as_slice_memory_order_mut()
+                .expect("m is contiguous");
+            let v = self.v[i]
+                .as_slice_memory_order_mut()
+                .expect("v is contiguous");
+            let d = inner
+                .data
+                .as_slice_memory_order_mut()
+                .expect("data is contiguous");
+            #[cfg(target_arch = "x86_64")]
+            {
+                if std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma") {
+                    unsafe { adam_update_avx2(g, m, v, d, b1, b2, one_b1, one_b2, eps, lr_t) };
+                    continue;
+                }
             }
+            adam_update_scalar(g, m, v, d, b1, b2, one_b1, one_b2, eps, lr_t);
         }
     }
 
