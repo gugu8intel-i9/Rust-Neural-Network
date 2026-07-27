@@ -519,6 +519,29 @@ cargo test
 
 ## Changelog
 
+### 1.6.0 — Honest PyTorch head-to-head + lower per-op overhead
+
+- **Measured vs eager-mode PyTorch (CPU, single-thread, same MLP / Adam / MSE).** This engine is
+  **faster than PyTorch for small models** — where per-op dispatch overhead dominates — and slower
+  for larger ones, where PyTorch+MKL's matmul wins. Reproducible via `examples/bench_train.rs` and
+  `examples/bench_torch.py`:
+
+  | model (MLP) | PyTorch/step | rust-nn/step | result |
+  |---|---|---|---|
+  | tiny  16→32→32→4,  batch 8  | 0.770 ms | **0.044 ms** | **~17.5× faster** |
+  | small 64→128→128→10, batch 32 | 0.815 ms | **0.405 ms** | **~2.0× faster** |
+  | medium 128→256→256→10, batch 32 | 1.120 ms | 1.779 ms | PyTorch wins (MKL matmul) |
+
+  (PyTorch got *no* speedup multi-threaded on these — they're overhead-bound, which is exactly why
+  the lean engine wins. `torch.compile` / larger models would change the picture.)
+- **Lower per-op allocation on the matmul/linear hot paths**: a new `Tensor::flat_data` reads
+  operands as a flat `Vec` under one lock with **no intermediate `ArrayD` clone** (the old path
+  cloned the whole operand array, then collected it again). Applied to `linear_layer` forward and
+  the fused `Op::Linear` backward — a few % off per-step, more on wider layers.
+- **Honest framing**: not "faster than PyTorch in general" — faster in the small-model /
+  overhead-bound regime on CPU, where eager PyTorch's per-op tax dominates. No fabricated number.
+- 338 tests pass, 0 clippy warnings, `cargo fmt` clean.
+
 ### 1.5.0 — Exploit the CPU's ML hardware: AVX-512 VNNI INT8 GEMM
 
 The biggest thing modern CPUs add *specifically for ML* is **dedicated low-precision matrix
