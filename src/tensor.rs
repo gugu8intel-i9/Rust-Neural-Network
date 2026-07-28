@@ -2013,17 +2013,12 @@ impl Tensor {
                 }
             }
 
-            // Finally, store this node's own accumulated gradient by MOVING `grad` (no clone).
-            // Previously this ran first with a `grad.clone()` on every node whose gradient buffer
-            // did not yet exist; computing child gradients first lets us move here instead.
-            {
-                let mut inner = node.0.write().unwrap();
-                if let Some(g) = inner.grad.as_mut() {
-                    *g += &grad;
-                } else {
-                    inner.grad = Some(grad);
-                }
-            }
+            // Intermediate (non-leaf) nodes' own gradients are never read — only leaf params'
+            // gradients are consumed by the optimizer (and those are stored in the early `else`
+            // branch above). So we DROP `grad` here instead of moving it into `node.grad`,
+            // avoiding a useless store (and long-lived retention) of a full-sized ArrayD for every
+            // intermediate on each backward — a real saving on large, op-heavy models.
+            drop(grad);
         }
     }
 
