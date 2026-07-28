@@ -519,6 +519,23 @@ cargo test
 
 ## Changelog
 
+### 1.9.1 — Profile-guided: drop intermediate gradients + training-shape diagnostics
+
+- **Stop storing gradients for intermediate (non-leaf) nodes.** Only leaf parameters' gradients
+  are ever consumed (by the optimizer); the old backward stored a full-sized `ArrayD` grad for
+  every intermediate too, then retained it. Now those are dropped immediately — less memory churn
+  per backward (matches PyTorch's default of not retaining non-leaf grads).
+- **New diagnostics** (for honest perf work, not cargo-culting): `examples/profile_large.rs`
+  (forward / backward / Adam breakdown) and `examples/gemm_shapes.rs` + a `gemm_train` criterion
+  group that measure GEMM efficiency at real training shapes (m = batch).
+- **Honest finding (the wall, with evidence):** for the *large* model the matmul floor
+  (~3.4 ms) is already *below* PyTorch's total (~4.3 ms) — so it is theoretically beatable — but
+  the remaining gap is **diffuse backward overhead** (~2.3 ms: result allocations/zeroing,
+  elementwise ops, per-node processing) that needs a real profiler (perf/DTrace) to attack. That
+  tooling isn't available in this sandbox, so large stays PyTorch's for now. Small/medium still
+  beat eager PyTorch (~24× / ~2×, often competitive at medium). No fabricated numbers.
+- 338 tests pass, 0 clippy warnings, `cargo fmt` clean.
+
 ### 1.9.0 — GEMM cache-block re-tuning (Goto/BLIS) + an honest prefetch experiment
 
 - **Re-tuned the N-block (`NC` 512 → 256)** so the packed `[KC, NC]` B-panel stays **resident in

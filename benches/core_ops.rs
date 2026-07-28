@@ -84,6 +84,42 @@ fn bench_linear_vs_flash_attention(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_gemm_train_shapes(c: &mut Criterion) {
+    // Real training matmul shapes (m = batch): forward [b,in]@[out,in]^T and backward dW.
+    // Reveals small-M GEMM efficiency — the lever for large-model training speed.
+    let mut group = c.benchmark_group("gemm_train");
+    let cases: &[(&str, usize, usize, usize)] = &[
+        ("fwd_b64", 64, 512, 512),
+        ("fwd_b32", 32, 512, 512),
+        ("dW_b64", 512, 512, 64),
+    ];
+    for &(label, m, n, k) in cases {
+        let a: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.001).sin()).collect();
+        let b: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.001).cos()).collect();
+        let mut c = vec![0.0f32; m * n];
+        group.bench_function(label.to_string(), |bencher| {
+            bencher.iter(|| {
+                blas::sgemm(
+                    blas::Transpose::NoTrans,
+                    blas::Transpose::NoTrans,
+                    m,
+                    n,
+                    k,
+                    1.0,
+                    black_box(&a),
+                    k,
+                    black_box(&b),
+                    n,
+                    0.0,
+                    black_box(&mut c),
+                    n,
+                )
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_int8_vs_fp32(c: &mut Criterion) {
     // INT8 (VNNI) vs FP32 (AVX2) GEMM at the same shape — INT8 exploits dedicated CPU matrix
     // hardware (~4× the MAC throughput/cycle, 4× less memory traffic).
@@ -267,6 +303,7 @@ criterion_group!(
     bench_matmul,
     bench_simd_matmul,
     bench_blas_sgemm,
+    bench_gemm_train_shapes,
     bench_int8_vs_fp32,
     bench_linear_vs_flash_attention,
     bench_dropout,
