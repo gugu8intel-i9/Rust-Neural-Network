@@ -44,6 +44,7 @@
 
 pub mod activations;
 pub mod blas;
+pub mod compiled;
 pub mod compression;
 pub mod data;
 pub mod diffusion;

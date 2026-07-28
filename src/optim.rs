@@ -88,7 +88,7 @@ impl Adam {
 
 /// Scalar fused Adam update (one pass, no temporaries).
 #[allow(clippy::too_many_arguments)]
-fn adam_update_scalar(
+pub fn adam_update_scalar(
     g: &[f32],
     m: &mut [f32],
     v: &mut [f32],
@@ -118,7 +118,7 @@ fn adam_update_scalar(
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::too_many_arguments)]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn adam_update_avx2(
+pub unsafe fn adam_update_avx2(
     g: &[f32],
     m: &mut [f32],
     v: &mut [f32],
