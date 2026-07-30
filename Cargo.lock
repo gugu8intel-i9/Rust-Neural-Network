@@ -1304,7 +1304,7 @@ dependencies = [
 
 [[package]]
 name = "rust-nn"
-version = "1.9.1"
+version = "2.0.0"
 dependencies = [
  "approx",
  "criterion",

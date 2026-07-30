@@ -105,7 +105,9 @@ pub use distributed::{
 pub use error::{Result, RustNnError};
 pub use finetune::{FastTrainConfig, FastTrainer, LoraAdapter, LrSchedule, TrainPoint};
 pub use fused::{fused_linear, sparse_topk_route, FusedActivation};
-pub use gpu::{gpu_add, gpu_matmul, gpu_mul, has_gpu, GpuBackend};
+pub use gpu::{
+    gpu_add, gpu_attention, gpu_linear, gpu_matmul, gpu_mul, gpu_relu, has_gpu, GpuBackend,
+};
 pub use gpu_kernels::{
     active_backend, backend_report, detect_backend, extract_kernels, kernel_matmul,
     kernel_matmul_with_backend, kernel_source, set_backend, GpuBackendKind, TileConfig,
